@@ -5,7 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 // ------------------------------------------------------------------
 // اطلاعات اتصال به Supabase را دقیقاً در این دو خط جایگزین کنید:
-const String supabaseUrl = 'https://kvkgyrifhqiukgjkojyx.supabase.co/rest/v1/';
+const String supabaseUrl = 'https://kvkgyrifhqiukgjkojyx.supabase.co';
 const String supabaseAnonKey = 'sb_publishable_fClXOE3GkV3Gj8VeVTPMSQ_erzUihwc';
 // ------------------------------------------------------------------
 
