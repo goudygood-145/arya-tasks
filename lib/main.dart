@@ -5,9 +5,11 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 // ------------------------------------------------------------------
 // اطلاعات اتصال به Supabase را دقیقاً در این دو خط جایگزین کنید:
-const String supabaseUrl = 'https://kvkgyrifhqiukgjkojyx.supabase.co/rest/v1/';
-const String supabaseAnonKey = 'sb_publishable_fClXOE3GkV3Gj8VeVTPMSQ_erzUihwc';
+const String supabaseUrl = 'YOUR_SUPABASE_URL';
+const String supabaseAnonKey = 'YOUR_SUPABASE_ANON_KEY';
 // ------------------------------------------------------------------
+
+typedef JsonRow = Map<String, dynamic>;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -263,13 +265,12 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  List> lists = [];
-  Map<String, Map<String, dynamic>> profilesMap = {};
-  List> currentListMembers = [];
+  List<JsonRow> lists = [];
+  Map<String, JsonRow> profilesMap = {};
+  List<JsonRow> currentListMembers = [];
 
-  // اگر null باشد یعنی فیلتر هوشمند (همه یا ستاره‌دار) انتخاب شده
   String? selectedListId;
-  String smartFilter = 'all'; // 'all' یا 'starred'
+  String smartFilter = 'all';
   String? selectedTaskId;
   bool loadingLists = true;
 
@@ -294,9 +295,9 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => loadingLists = true);
     try {
       final profData = await supabase.from('profiles').select();
-      final map = <String, Map<String, dynamic>>{};
+      final map = <String, JsonRow>{};
       for (final p in profData) {
-        map[p['id'] as String] = Map<String, dynamic>.from(p);
+        map[p['id'] as String] = JsonRow.from(p);
       }
 
       final listData = await supabase
@@ -307,7 +308,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
       setState(() {
         profilesMap = map;
-        lists = List>.from(listData);
+        lists = List<JsonRow>.from(listData);
         if (selectedListId == null && lists.isNotEmpty && smartFilter == 'all') {
           selectedListId = lists.first['id'] as String;
         }
@@ -333,7 +334,7 @@ class _HomeScreenState extends State<HomeScreen> {
           .eq('list_id', listId);
       if (mounted) {
         setState(() {
-          currentListMembers = List>.from(data);
+          currentListMembers = List<JsonRow>.from(data);
         });
       }
     } catch (_) {}
@@ -396,7 +397,7 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _deleteList(Map<String, dynamic> list) async {
+  Future<void> _deleteList(JsonRow list) async {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -503,7 +504,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       itemCount: currentListMembers.length,
                       itemBuilder: (_, i) {
                         final m = currentListMembers[i];
-                        final prof = m['profiles'] as Map<String, dynamic>?;
+                        final prof = m['profiles'] as JsonRow?;
                         final name = prof?['full_name'] ?? 'کاربر';
                         final email = prof?['email'] ?? '';
                         final role = m['role'] == 'owner' ? 'مدیر' : 'عضو';
@@ -587,7 +588,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return smartFilter == 'starred' ? 'کارهای ستاره‌دار' : 'همه کارها';
   }
 
-  Stream<List>> _tasksStream() {
+  Stream<List<JsonRow>> _tasksStream() {
     if (selectedListId != null) {
       return supabase
           .from('tasks')
@@ -816,7 +817,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           Expanded(
-            child: StreamBuilder<List>>(
+            child: StreamBuilder<List<JsonRow>>(
               stream: _tasksStream(),
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting &&
@@ -882,7 +883,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _taskCard(Map<String, dynamic> task, bool isDesktop) {
+  Widget _taskCard(JsonRow task, bool isDesktop) {
     final isDone = task['is_completed'] == true;
     final isStarred = task['is_starred'] == true;
     final isSelected = isDesktop && selectedTaskId == task['id'];
@@ -1056,7 +1057,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
 class TaskDetailPanel extends StatefulWidget {
   final String taskId;
-  final Map<String, Map<String, dynamic>> profilesMap;
+  final Map<String, JsonRow> profilesMap;
   final VoidCallback? onClose;
   final VoidCallback? onDeleted;
 
@@ -1077,7 +1078,7 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
   final commentCtrl = TextEditingController();
   final notesCtrl = TextEditingController();
   bool notesInitialized = false;
-  List> listMembers = [];
+  List<JsonRow> listMembers = [];
   String? loadedListId;
 
   @override
@@ -1098,13 +1099,13 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
           .eq('list_id', listId);
       if (mounted) {
         setState(() {
-          listMembers = List>.from(data);
+          listMembers = List<JsonRow>.from(data);
         });
       }
     } catch (_) {}
   }
 
-  Future<void> _pickDueDate(Map<String, dynamic> task) async {
+  Future<void> _pickDueDate(JsonRow task) async {
     final initial = DateTime.tryParse(task['due_date'] ?? '') ?? DateTime.now();
     final picked = await showDatePicker(
       context: context,
@@ -1142,7 +1143,7 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<List>>(
+    return StreamBuilder<List<JsonRow>>(
       stream: supabase
           .from('tasks')
           .stream(primaryKey: ['id'])
@@ -1233,7 +1234,6 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
                     ],
                   ),
                   const Divider(),
-                  // تاریخ سررسید
                   ListTile(
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.calendar_month_outlined),
@@ -1251,7 +1251,6 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
                         : null,
                     onTap: () => _pickDueDate(task),
                   ),
-                  // ارجاع به همکار
                   ListTile(
                     contentPadding: EdgeInsets.zero,
                     leading: const Icon(Icons.person_outline),
@@ -1271,7 +1270,7 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
                           child: Text('تعیین نشده'),
                         ),
                         ...listMembers.map((m) {
-                          final prof = m['profiles'] as Map<String, dynamic>?;
+                          final prof = m['profiles'] as JsonRow?;
                           return DropdownMenuItem<String?>(
                             value: m['user_id'] as String,
                             child: Text(
@@ -1288,7 +1287,6 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  // یادداشت
                   TextField(
                     controller: notesCtrl,
                     maxLines: 3,
@@ -1312,7 +1310,6 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
                     ),
                   ),
                   const SizedBox(height: 18),
-                  // زیروظایف
                   const Text(
                     'زیروظایف (چک‌لیست)',
                     style: TextStyle(fontWeight: FontWeight.bold),
@@ -1339,7 +1336,7 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  StreamBuilder<List>>(
+                  StreamBuilder<List<JsonRow>>(
                     stream: supabase
                         .from('subtasks')
                         .stream(primaryKey: ['id'])
@@ -1383,13 +1380,12 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
                     },
                   ),
                   const Divider(height: 28),
-                  // بخش گفت‌وگو و کامنت‌ها
                   const Text(
                     'گفت‌وگو و تبادل نظر تیمی',
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 8),
-                  StreamBuilder<List>>(
+                  StreamBuilder<List<JsonRow>>(
                     stream: supabase
                         .from('comments')
                         .stream(primaryKey: ['id'])
@@ -1460,7 +1456,6 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
                 ],
               ),
             ),
-            // کادر ارسال پیام پایین صفحه
             Container(
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
