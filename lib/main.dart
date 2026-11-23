@@ -102,7 +102,7 @@ class AuthScreen extends StatefulWidget {
 
 class _AuthScreenState extends State<AuthScreen> {
   bool isLogin = true;
-  bool loading = false;
+  bool obscurePass = true;
   final emailCtrl = TextEditingController();
   final passCtrl = TextEditingController();
   final nameCtrl = TextEditingController();
