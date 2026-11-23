@@ -210,13 +210,23 @@ class _AuthScreenState extends State<AuthScreen> {
                     const SizedBox(height: 14),
                     TextField(
                       controller: passCtrl,
-                      obscureText: true,
+                      obscureText: obscurePass,
                       textDirection: TextDirection.ltr,
                       onSubmitted: (_) => _submit(),
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         labelText: 'رمز عبور (حداقل ۶ کاراکتر)',
-                        prefixIcon: Icon(Icons.lock_outline),
-                        border: OutlineInputBorder(),
+                        prefixIcon: const Icon(Icons.lock_outline),
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            obscurePass
+                                ? Icons.visibility_outlined
+                                : Icons.visibility_off_outlined,
+                          ),
+                          onPressed: () {
+                            setState(() => obscurePass = !obscurePass);
+                          },
+                        ),
+                        border: const OutlineInputBorder(),
                       ),
                     ),
                     const SizedBox(height: 22),
