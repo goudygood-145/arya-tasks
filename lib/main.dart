@@ -7,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'core.dart';
 import 'settings_and_tools.dart';
 import 'task_detail.dart';
+import 'updater_stub.dart' if (dart.library.io) 'updater_android.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -338,6 +339,9 @@ void _onSettingsChanged() {
     _initSessionWatch();
     _loadInitialData();
     _refreshStorage();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      checkForAndroidUpdate(context);
+    });
   }
 
   @override
