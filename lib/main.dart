@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'core.dart';
@@ -8,6 +10,9 @@ import 'task_detail.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (kIsWeb) {
+    await BrowserContextMenu.disableContextMenu();
+  }
   await appSettings.load();
   await Supabase.initialize(
     url: supabaseUrl,
@@ -322,9 +327,14 @@ class _HomeScreenState extends State<HomeScreen> {
     return myListRoles[listId] == 'owner';
   }
 
+void _onSettingsChanged() {
+    if (mounted) setState(() {});
+  }
+
   @override
   void initState() {
     super.initState();
+    appSettings.addListener(_onSettingsChanged);
     _initSessionWatch();
     _loadInitialData();
     _refreshStorage();
@@ -332,6 +342,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    appSettings.removeListener(_onSettingsChanged);
     _sessionSub?.cancel();
     quickAddCtrl.dispose();
     searchCtrl.dispose();
