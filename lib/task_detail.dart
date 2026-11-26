@@ -242,13 +242,16 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
         if (confirm != true) return;
       }
 
+      final safeDateIso =
+          DateTime.utc(picked.year, picked.month, picked.day, 12)
+              .toIso8601String();
       await supabase
           .from('tasks')
-          .update({'due_date': picked.toIso8601String()}).eq('id', task['id']);
+          .update({'due_date': safeDateIso}).eq('id', task['id']);
       await logActivity(
         widget.taskId,
         currentUserName,
-        'سررسید را به ${formatAppDate(picked.toIso8601String())} تغییر داد',
+        'سررسید را به ${formatAppDate(safeDateIso)} تغییر داد',
       );
     }
   }
