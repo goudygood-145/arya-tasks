@@ -298,6 +298,15 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
       if (file == null) return;
       final bytes = await file.readAsBytes();
 
+      const maxFileBytes = 50 * 1024 * 1024;
+      if (bytes.length > maxFileBytes) {
+        _showMsg(tr(
+          'حجم فایل نباید بیشتر از ۵۰ مگابایت باشد (حجم فایل انتخابی: ${formatBytes(bytes.length)}).',
+          'File size cannot exceed 50 MB (selected: ${formatBytes(bytes.length)}).',
+        ));
+        return;
+      }
+
       setState(() => uploadingFile = true);
       final safePath = buildSafeStoragePath(widget.taskId, file.name);
 
@@ -1224,8 +1233,18 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      _sectionHeader(tr('فایل‌های ضمیمه', 'Attachments'),
-                          Icons.attach_file_rounded, cs),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _sectionHeader(tr('فایل‌های ضمیمه', 'Attachments'),
+                              Icons.attach_file_rounded, cs),
+                          Text(
+                            tr('حداکثر حجم هر فایل: ۵۰ مگابایت',
+                                'Max file size: 50 MB'),
+                            style: hintStyle,
+                          ),
+                        ],
+                      ),
                       if (isEditable)
                         FilledButton.tonalIcon(
                           onPressed: uploadingFile ? null : _uploadAttachment,
