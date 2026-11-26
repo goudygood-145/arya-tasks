@@ -2,10 +2,9 @@ name: Monthly Backup & 90-Day Trash Cleanup
 
 on:
   schedule:
-    # یکم هر ماه میلادی ساعت ۶ صبح: بکاپ سبک دیتابیس (ZIP) + ارسال ایمیل
-    - cron: '0 6 1 * *'
-    # هر ۳ روز یک‌بار ساعت ۷ صبح: حذف بکاپ‌های قدیمی‌تر از ۲ هفته و تسک‌های حذف‌شده بالای ۹۰ روز
-    - cron: '0 7 */3 * *'
+    # اجرای روزانه ساعت ۲:۳۰ بامداد UTC (۶:۰۰ صبح به وقت ایران)
+    # بکاپ خودکار فقط در روز «یکم هر ماه شمسی» گرفته می‌شود
+    - cron: '30 2 * * *'
   workflow_dispatch:
     inputs:
       run_backup_now:
@@ -27,7 +26,6 @@ jobs:
       SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
       BACKUP_TO_EMAIL: ${{ secrets.BACKUP_TO_EMAIL }}
       EVENT_NAME: ${{ github.event_name }}
-      EVENT_CRON: ${{ github.event.schedule }}
       MANUAL_BACKUP: ${{ inputs.run_backup_now }}
       INCLUDE_FILES: ${{ inputs.include_files }}
     steps:
@@ -52,6 +50,25 @@ jobs:
           if KEY.startswith('eyJ'):
               HEADERS['Authorization'] = f'Bearer {KEY}'
 
+          def gregorian_to_jalali(gy, gm, gd):
+              g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+              gy2 = gy + 1 if gm > 2 else gy
+              days = 355666 + (365 * gy) + ((gy2 + 3) // 4) - ((gy2 + 99) // 100) + ((gy2 + 399) // 400) + gd + g_d_m[gm - 1]
+              jy = -1595 + (33 * (days // 12053))
+              days %= 12053
+              jy += 4 * (days // 1461)
+              days %= 1461
+              if days > 365:
+                  jy += (days - 1) // 365
+                  days = (days - 1) % 365
+              if days < 186:
+                  jm = 1 + (days // 31)
+                  jd = 1 + (days % 31)
+              else:
+                  jm = 7 + ((days - 186) // 30)
+                  jd = 1 + ((days - 186) % 30)
+              return jy, jm, jd
+
           def req(method, path, body=None, extra_headers=None, raw_response=False):
               h = dict(HEADERS)
               if extra_headers:
@@ -72,6 +89,10 @@ jobs:
                   raise
 
           now = datetime.now(timezone.utc)
+          tehran_now = now + timedelta(hours=3, minutes=30)
+          jy, jm, jd = gregorian_to_jalali(tehran_now.year, tehran_now.month, tehran_now.day)
+          jalali_str = f"{jy:04d}-{jm:02d}-{jd:02d}"
+          print(f"Tehran Jalali Date: {jalali_str}")
 
           # ۱. پاکسازی خودکار فایل‌های بکاپ قدیمی‌تر از ۱۴ روز (۲ هفته)
           try:
@@ -106,10 +127,11 @@ jobs:
           except Exception as e:
               print("Trash purge warning:", e)
 
-          # ۳. تهیه بکاپ (دیتابیس + در صورت انتخاب، تمام فایل‌های آپلودشده)
+          # ۳. تهیه بکاپ: یکم هر ماه شمسی یا اجرای دستی
           is_manual = os.environ.get('EVENT_NAME') == 'workflow_dispatch'
+          is_first_of_shamsi_month = (os.environ.get('EVENT_NAME') == 'schedule' and jd == 1)
           should_backup = (
-              os.environ.get('EVENT_CRON') == '0 6 1 * *'
+              is_first_of_shamsi_month
               or (is_manual and os.environ.get('MANUAL_BACKUP', 'true') == 'true')
           )
           include_files = is_manual and os.environ.get('INCLUDE_FILES', 'false') == 'true'
@@ -119,11 +141,11 @@ jobs:
                   'profiles', 'lists', 'list_members', 'tasks',
                   'subtasks', 'comments', 'note_history', 'activity_logs', 'task_attachments'
               ]
-              dump = {'exported_at': now.isoformat()}
+              dump = {'exported_at': now.isoformat(), 'jalali_date': jalali_str}
               for tbl in tables:
                   dump[tbl] = req('GET', f'/rest/v1/{tbl}?select=*')
 
-              stamp = now.strftime('%Y-%m-%d_%H-%M')
+              stamp = f"{jalali_str}_{tehran_now.strftime('%H-%M')}"
               suffix = 'full-with-files' if include_files else 'db-only'
               json_name = f"ha-tasks-backup-{stamp}.json"
               zip_name = f"ha-tasks-backup-{suffix}-{stamp}.zip"
@@ -169,12 +191,12 @@ jobs:
               mode_text = f"کامل (دیتابیس + {files_count} فایل ضمیمه)" if include_files else "فقط دیتابیس"
 
               msg = EmailMessage()
-              msg['Subject'] = f"بکاپ {mode_text} H.A. Tasks ({now.strftime('%Y-%m-%d')})"
+              msg['Subject'] = f"بکاپ {mode_text} H.A. Tasks ({jalali_str})"
               msg['From'] = os.environ['SMTP_EMAIL']
               msg['To'] = os.environ['BACKUP_TO_EMAIL']
               msg.set_content(
                   f"سلام،\n\n"
-                  f"نسخه پشتیبان H.A. Tasks با موفقیت آماده شد.\n"
+                  f"نسخه پشتیبان H.A. Tasks برای تاریخ {jalali_str} با موفقیت آماده شد.\n"
                   f"نوع بکاپ: {mode_text}\n"
                   f"حجم فایل فشرده: {size_text}\n\n"
                   f"لینک دانلود مستقیم فایل ZIP (معتبر به مدت ۱۴ روز):\n{download_url}\n\n"
@@ -187,4 +209,6 @@ jobs:
                   smtp.login(os.environ['SMTP_EMAIL'], os.environ['SMTP_APP_PASSWORD'])
                   smtp.send_message(msg)
               print(f"Backup ({mode_text}) created ({len(zip_bytes)} bytes) and emailed successfully.")
+          else:
+              print("Not the 1st of Shamsi month; skipped monthly backup.")
           EOF
