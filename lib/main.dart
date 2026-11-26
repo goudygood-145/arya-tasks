@@ -307,6 +307,9 @@ class _HomeScreenState extends State<HomeScreen> {
   final quickAddCtrl = TextEditingController();
   final searchCtrl = TextEditingController();
   StreamSubscription? _sessionSub;
+  late final Stream<List<JsonRow>> _tasksStream;
+  late final Stream<List<JsonRow>> _subtasksStream;
+  late final Stream<List<JsonRow>> _notificationsStream;
 
   String get currentUserId => supabase.auth.currentUser!.id;
   String get currentUserEmail => supabase.auth.currentUser?.email ?? '';
@@ -335,6 +338,15 @@ void _onSettingsChanged() {
   @override
   void initState() {
     super.initState();
+    _tasksStream = supabase
+        .from('tasks')
+        .stream(primaryKey: ['id'])
+        .order('created_at', ascending: false);
+    _subtasksStream = supabase.from('subtasks').stream(primaryKey: ['id']);
+    _notificationsStream = supabase
+        .from('notifications')
+        .stream(primaryKey: ['id'])
+        .eq('user_id', currentUserId);
     appSettings.addListener(_onSettingsChanged);
     _initSessionWatch();
     _loadInitialData();
@@ -2142,10 +2154,7 @@ void _onSettingsChanged() {
     final cs = Theme.of(context).colorScheme;
 
     return StreamBuilder<List<JsonRow>>(
-      stream: supabase
-          .from('tasks')
-          .stream(primaryKey: ['id'])
-          .order('created_at', ascending: false),
+      stream: _tasksStream,
       builder: (context, taskSnap) {
         final allActiveTasks = (taskSnap.data ?? [])
             .where((t) => t['deleted_at'] == null)
@@ -2156,7 +2165,7 @@ void _onSettingsChanged() {
             .toList();
 
         return StreamBuilder<List<JsonRow>>(
-          stream: supabase.from('subtasks').stream(primaryKey: ['id']),
+          stream: _subtasksStream,
           builder: (context, subSnap) {
             final subtasksByTask = <String, List<JsonRow>>{};
             for (final s in (subSnap.data ?? [])) {
@@ -2230,10 +2239,7 @@ void _onSettingsChanged() {
                   ),
                   // زنگوله اعلان‌ها با شمارنده خوانده‌نشده
                   StreamBuilder<List<JsonRow>>(
-                    stream: supabase
-                        .from('notifications')
-                        .stream(primaryKey: ['id'])
-                        .eq('user_id', currentUserId),
+                    stream: _notificationsStream,
                     builder: (ctx, nSnap) {
                       final unread = (nSnap.data ?? [])
                           .where((n) => n['is_read'] != true)
