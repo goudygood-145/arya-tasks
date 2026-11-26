@@ -25,14 +25,36 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Generate Android files & Bundle Vazirmatn Font
+      - name: Generate Android files, Font & Green H.A. Logo
         run: |
           flutter create . --platforms=android
-          git checkout -- pubspec.yaml lib/main.dart
+          git checkout -- pubspec.yaml lib/
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <application/' android/app/src/main/AndroidManifest.xml
+          sed -i 's/android:label="[^"]*"/android:label="H.A. Tasks"/' android/app/src/main/AndroidManifest.xml
           mkdir -p assets/fonts
           curl -fL "https://raw.githubusercontent.com/rastikerdar/vazirmatn/v33.003/fonts/ttf/Vazirmatn-Regular.ttf" -o assets/fonts/Vazirmatn-Regular.ttf
           curl -fL "https://raw.githubusercontent.com/rastikerdar/vazirmatn/v33.003/fonts/ttf/Vazirmatn-Bold.ttf" -o assets/fonts/Vazirmatn-Bold.ttf
+          python3 -m pip install -q pillow
+          python3 - << 'EOF'
+          from PIL import Image, ImageDraw, ImageFont
+          import os
+          img = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+          d = ImageDraw.Draw(img)
+          d.rounded_rectangle([24, 24, 488, 488], radius=105, fill=(22, 163, 74, 255))
+          d.line([(125, 220), (215, 310), (390, 125)], fill=(255, 255, 255, 255), width=42, joint="curve")
+          try:
+              font = ImageFont.truetype("assets/fonts/Vazirmatn-Bold.ttf", 112)
+          except Exception:
+              font = ImageFont.load_default()
+          bbox = d.textbbox((0, 0), "H.A.", font=font)
+          tw = bbox[2] - bbox[0]
+          d.text(((512 - tw) / 2, 330), "H.A.", fill=(255, 255, 255, 255), font=font)
+          sizes = {"mipmap-mdpi": 48, "mipmap-hdpi": 72, "mipmap-xhdpi": 96, "mipmap-xxhdpi": 144, "mipmap-xxxhdpi": 192}
+          for folder, sz in sizes.items():
+              path = f"android/app/src/main/res/{folder}"
+              os.makedirs(path, exist_ok=True)
+              img.resize((sz, sz), Image.LANCZOS).save(f"{path}/ic_launcher.png")
+          EOF
 
       - name: Build APK
         run: |
@@ -42,7 +64,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: AryaTasks-Android-APK
+          name: HA-Tasks-Android-APK
           path: build/app/outputs/flutter-apk/app-release.apk
 
   build-and-deploy-web:
@@ -57,13 +79,34 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Generate Web files, Bundle Font & Build
+      - name: Generate Web files, Font & Green H.A. Logo
         run: |
           flutter create . --platforms=web
-          git checkout -- pubspec.yaml lib/main.dart
+          git checkout -- pubspec.yaml lib/
           mkdir -p assets/fonts
           curl -fL "https://raw.githubusercontent.com/rastikerdar/vazirmatn/v33.003/fonts/ttf/Vazirmatn-Regular.ttf" -o assets/fonts/Vazirmatn-Regular.ttf
           curl -fL "https://raw.githubusercontent.com/rastikerdar/vazirmatn/v33.003/fonts/ttf/Vazirmatn-Bold.ttf" -o assets/fonts/Vazirmatn-Bold.ttf
+          python3 -m pip install -q pillow
+          python3 - << 'EOF'
+          from PIL import Image, ImageDraw, ImageFont
+          img = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+          d = ImageDraw.Draw(img)
+          d.rounded_rectangle([24, 24, 488, 488], radius=105, fill=(22, 163, 74, 255))
+          d.line([(125, 220), (215, 310), (390, 125)], fill=(255, 255, 255, 255), width=42, joint="curve")
+          try:
+              font = ImageFont.truetype("assets/fonts/Vazirmatn-Bold.ttf", 112)
+          except Exception:
+              font = ImageFont.load_default()
+          bbox = d.textbbox((0, 0), "H.A.", font=font)
+          tw = bbox[2] - bbox[0]
+          d.text(((512 - tw) / 2, 330), "H.A.", fill=(255, 255, 255, 255), font=font)
+          img.resize((64, 64), Image.LANCZOS).save("web/favicon.png")
+          img.resize((192, 192), Image.LANCZOS).save("web/icons/Icon-192.png")
+          img.resize((512, 512), Image.LANCZOS).save("web/icons/Icon-512.png")
+          img.resize((192, 192), Image.LANCZOS).save("web/icons/Icon-maskable-192.png")
+          img.resize((512, 512), Image.LANCZOS).save("web/icons/Icon-maskable-512.png")
+          EOF
+          sed -i 's/<title>[^<]*<\/title>/<title>H.A. Tasks<\/title>/' web/index.html
           flutter pub get
           flutter build web --release --base-href "/${{ github.event.repository.name }}/"
 
