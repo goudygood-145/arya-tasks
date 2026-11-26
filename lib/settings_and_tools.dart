@@ -603,7 +603,7 @@ class _TrashBinDialogState extends State<TrashBinDialog> {
   }
 }
 
-// ابزار ورود اطلاعات از Microsoft To Do (با انتخاب لیست‌ها و فیلتر وضعیت)
+// ابزار ورود اطلاعات از Microsoft To Do (با استخراج کامل زیروظایف، سررسید، اولویت، تگ و تکرار)
 class TodoImportDialog extends StatefulWidget {
   final String currentUserEmail;
   final String currentUserName;
@@ -638,6 +638,51 @@ class _TodoImportDialogState extends State<TodoImportDialog> {
   void dispose() {
     emailCheckCtrl.dispose();
     super.dispose();
+  }
+
+  String? _normalizeDueDate(dynamic raw) {
+    String? str;
+    if (raw is Map && raw['dateTime'] != null) {
+      str = raw['dateTime'].toString();
+    } else if (raw is String && raw.trim().isNotEmpty) {
+      str = raw.trim();
+    }
+    if (str == null) return null;
+    final dt = DateTime.tryParse(str);
+    if (dt == null) return null;
+    return DateTime.utc(dt.year, dt.month, dt.day, 12).toIso8601String();
+  }
+
+  String _normalizeRecurrence(dynamic raw) {
+    if (raw is String) {
+      final v = raw.toLowerCase();
+      if (v == 'daily' || v == 'weekly' || v == 'monthly') return v;
+      return 'none';
+    }
+    if (raw is Map) {
+      final pType = (raw['pattern'] is Map ? raw['pattern']['type'] : raw['type'])
+              ?.toString()
+              .toLowerCase() ??
+          '';
+      if (pType.contains('daily')) return 'daily';
+      if (pType.contains('weekly')) return 'weekly';
+      if (pType.contains('monthly')) return 'monthly';
+    }
+    return 'none';
+  }
+
+  List<JsonRow> _extractSubtasks(dynamic raw) {
+    final result = <JsonRow>[];
+    if (raw is! List) return result;
+    for (final item in raw) {
+      if (item is Map) {
+        final title = (item['displayName'] ?? item['title'] ?? '').toString().trim();
+        if (title.isEmpty) continue;
+        final done = item['isChecked'] == true || item['is_completed'] == true;
+        result.add({'title': title, 'is_completed': done});
+      }
+    }
+    return result;
   }
 
   Future<void> _pickFile() async {
@@ -685,15 +730,39 @@ class _TodoImportDialogState extends State<TodoImportDialog> {
             grouped.putIfAbsent(lName, () => []);
             for (final t in tasks) {
               if (t is Map) {
+                final isImportant =
+                    t['importance']?.toString().toLowerCase() == 'high' ||
+                        t['is_starred'] == true;
+                final rawPriority = t['priority']?.toString().toLowerCase();
+                final priority = isImportant
+                    ? 'urgent'
+                    : (rawPriority == 'urgent' || rawPriority == 'medium'
+                        ? rawPriority!
+                        : 'normal');
+                final rawTags = (t['categories'] is List)
+                    ? t['categories'] as List
+                    : ((t['tags'] is List) ? t['tags'] as List : []);
+                final tags = rawTags
+                    .map((e) => e.toString().trim().replaceAll('#', ''))
+                    .where((e) => e.isNotEmpty)
+                    .toList();
+
                 grouped[lName]!.add({
-                  'title': (t['title'] ?? '').toString(),
+                  'title': (t['title'] ?? '').toString().trim(),
                   'is_completed': t['status'] == 'completed' ||
                       t['is_completed'] == true,
                   'notes': (t['body'] is Map
                           ? t['body']['content']
                           : t['notes'])
-                      ?.toString() ??
+                      ?.toString()
+                      .trim() ??
                       '',
+                  'due_date': _normalizeDueDate(t['dueDateTime'] ?? t['due_date']),
+                  'is_starred': isImportant,
+                  'priority': priority,
+                  'tags': tags,
+                  'recurrence': _normalizeRecurrence(t['recurrence']),
+                  'subtasks': _extractSubtasks(t['checklistItems'] ?? t['subtasks']),
                 });
               }
             }
@@ -710,11 +779,20 @@ class _TodoImportDialogState extends State<TodoImportDialog> {
               ['true', '1', 'completed', 'yes']
                   .contains(cols[2].replaceAll('"', '').trim().toLowerCase());
           final notes = cols.length > 3 ? cols[3].replaceAll('"', '').trim() : '';
+          final due = cols.length > 4
+              ? _normalizeDueDate(cols[4].replaceAll('"', '').trim())
+              : null;
           if (tTitle.isEmpty) continue;
           grouped.putIfAbsent(lName.isEmpty ? 'To Do' : lName, () => []).add({
             'title': tTitle,
             'is_completed': done,
             'notes': notes,
+            'due_date': due,
+            'is_starred': false,
+            'priority': 'normal',
+            'tags': <String>[],
+            'recurrence': 'none',
+            'subtasks': <JsonRow>[],
           });
         }
       }
@@ -757,17 +835,53 @@ class _TodoImportDialogState extends State<TodoImportDialog> {
 
         final tasks = parsedLists[listName] ?? [];
         for (final t in tasks) {
+          final title = (t['title'] ?? '').toString();
+          if (title.isEmpty) continue;
           final done = t['is_completed'] == true;
           if (importMode == 'unchecked' && done) continue;
           if (importMode == 'checked' && !done) continue;
-          await supabase.from('tasks').insert({
-            'list_id': newListId,
-            'title': t['title'],
-            'notes': t['notes'] ?? '',
-            'is_completed': done,
-            'created_by': uid,
-            'created_by_name': widget.currentUserName,
-          });
+
+          final notes = (t['notes'] ?? '').toString();
+          final insertedTask = await supabase
+              .from('tasks')
+              .insert({
+                'list_id': newListId,
+                'title': title,
+                'notes': notes,
+                'is_completed': done,
+                'due_date': t['due_date'],
+                'is_starred': t['is_starred'] == true,
+                'priority': t['priority'] ?? 'normal',
+                'tags': t['tags'] ?? [],
+                'recurrence': t['recurrence'] ?? 'none',
+                'created_by': uid,
+                'created_by_name': widget.currentUserName,
+              })
+              .select('id')
+              .single();
+
+          final newTaskId = insertedTask['id'] as String;
+
+          if (notes.isNotEmpty) {
+            await supabase.from('note_history').insert({
+              'task_id': newTaskId,
+              'content': notes,
+              'author_id': uid,
+              'author_name': widget.currentUserName,
+              'action': 'created',
+            });
+          }
+
+          final subs = (t['subtasks'] as List?) ?? [];
+          for (final s in subs) {
+            if (s is Map) {
+              await supabase.from('subtasks').insert({
+                'task_id': newTaskId,
+                'title': s['title'],
+                'is_completed': s['is_completed'] == true,
+              });
+            }
+          }
         }
       }
       widget.onImported();
@@ -775,7 +889,7 @@ class _TodoImportDialogState extends State<TodoImportDialog> {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(tr('اطلاعات با موفقیت وارد شد.', 'Import completed.')),
+            content: Text(tr('اطلاعات با تمام جزئیات وارد شد.', 'Full import completed.')),
           ),
         );
       }
@@ -886,7 +1000,6 @@ class _TodoImportDialogState extends State<TodoImportDialog> {
     );
   }
 }
-
 // ابزار بازیابی از فایل بکاپ ماهانه
 Future<void> showBackupRestoreDialog(
   BuildContext context,
