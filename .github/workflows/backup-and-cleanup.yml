@@ -2,14 +2,14 @@ name: Monthly Backup & 90-Day Trash Cleanup
 
 on:
   schedule:
-    # یکم هر ماه میلادی ساعت ۶ صبح: بکاپ کامل + ارسال ایمیل
+    # یکم هر ماه میلادی ساعت ۶ صبح: بکاپ کامل فشرده (ZIP) + ارسال ایمیل
     - cron: '0 6 1 * *'
     # هر ۳ روز یک‌بار ساعت ۷ صبح: حذف بکاپ‌های قدیمی‌تر از ۲ هفته و تسک‌های حذف‌شده بالای ۹۰ روز
     - cron: '0 7 */3 * *'
   workflow_dispatch:
     inputs:
       run_backup_now:
-        description: 'همین الان بکاپ گرفته و ایمیل ارسال شود؟'
+        description: 'همین الان بکاپ زیپ‌شده گرفته و ایمیل ارسال شود؟'
         type: boolean
         default: true
 
@@ -29,7 +29,7 @@ jobs:
       - name: Run Backup and Cleanup Script
         run: |
           python3 - << 'EOF'
-          import json, os, smtplib, urllib.request, urllib.parse
+          import io, json, os, smtplib, urllib.request, urllib.parse, zipfile
           from datetime import datetime, timedelta, timezone
           from email.message import EmailMessage
 
@@ -88,7 +88,7 @@ jobs:
           except Exception as e:
               print("Trash purge warning:", e)
 
-          # ۳. بکاپ ماهانه کامل و ارسال لینک دانلود (دارای اعتبار ۲ هفته‌ای) به ایمیل
+          # ۳. بکاپ ماهانه کامل به صورت ZIP و ارسال لینک دانلود به ایمیل
           should_backup = (
               os.environ.get('EVENT_CRON') == '0 6 1 * *'
               or (os.environ.get('EVENT_NAME') == 'workflow_dispatch' and os.environ.get('MANUAL_BACKUP', 'true') == 'true')
@@ -103,32 +103,41 @@ jobs:
               for tbl in tables:
                   dump[tbl] = req('GET', f'/rest/v1/{tbl}?select=*')
 
-              filename = f"ha-tasks-backup-{now.strftime('%Y-%m-%d_%H-%M')}.json"
-              payload = json.dumps(dump, ensure_ascii=False, indent=2).encode('utf-8')
-              req('POST', f'/storage/v1/object/backups/{filename}', payload, {
-                  'Content-Type': 'application/json',
+              stamp = now.strftime('%Y-%m-%d_%H-%M')
+              json_name = f"ha-tasks-backup-{stamp}.json"
+              zip_name = f"ha-tasks-backup-{stamp}.zip"
+
+              json_bytes = json.dumps(dump, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+              buf = io.BytesIO()
+              with zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+                  zf.writestr(json_name, json_bytes)
+              zip_bytes = buf.getvalue()
+
+              req('POST', f'/storage/v1/object/backups/{zip_name}', zip_bytes, {
+                  'Content-Type': 'application/zip',
                   'x-upsert': 'true',
               })
 
               # لینک دانلود امن با اعتبار ۱۴ روز
-              sign_res = req('POST', f'/storage/v1/object/sign/backups/{filename}', {'expiresIn': 1209600})
+              sign_res = req('POST', f'/storage/v1/object/sign/backups/{zip_name}', {'expiresIn': 1209600})
               download_url = f"{URL}/storage/v1{sign_res['signedURL']}"
 
               msg = EmailMessage()
-              msg['Subject'] = f"بکاپ ماهانه دیتابیس H.A. Tasks ({now.strftime('%Y-%m-%d')})"
+              msg['Subject'] = f"بکاپ ماهانه فشرده (ZIP) دیتابیس H.A. Tasks ({now.strftime('%Y-%m-%d')})"
               msg['From'] = os.environ['SMTP_EMAIL']
               msg['To'] = os.environ['BACKUP_TO_EMAIL']
               msg.set_content(
                   f"سلام،\n\n"
-                  f"نسخه پشتیبان کامل دیتابیس H.A. Tasks با موفقیت تهیه شد.\n\n"
-                  f"لینک دانلود مستقیم فایل بکاپ (معتبر به مدت ۱۴ روز):\n{download_url}\n\n"
+                  f"نسخه پشتیبان کامل و فشرده دیتابیس H.A. Tasks آماده شد.\n"
+                  f"حجم فایل فشرده: {len(zip_bytes) / 1024:.1f} کیلوبایت\n\n"
+                  f"لینک دانلود مستقیم فایل ZIP (معتبر به مدت ۱۴ روز):\n{download_url}\n\n"
                   f"نکات مهم:\n"
                   f"- این فایل پس از ۲ هفته به‌صورت خودکار از سرور پاک می‌شود تا فضایی اشغال نکند.\n"
-                  f"- برای بازیابی موارد پاک‌شده، کافی است فایل دانلودشده را از طریق دکمه «بازیابی از فایل بکاپ» در پایین منوی برنامه بارگذاری کنید.\n"
+                  f"- در صورت نیاز به بازیابی، ابتدا فایل ZIP را از حالت فشرده خارج کنید و سپس فایل .json داخل آن را از طریق دکمه «بازیابی از فایل بکاپ» در برنامه انتخاب نمایید.\n"
               )
 
               with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
                   smtp.login(os.environ['SMTP_EMAIL'], os.environ['SMTP_APP_PASSWORD'])
                   smtp.send_message(msg)
-              print("Monthly backup created and emailed successfully.")
+              print(f"Monthly ZIP backup created ({len(zip_bytes)} bytes) and emailed successfully.")
           EOF
