@@ -6,13 +6,16 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
 jobs:
   build-android:
     runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: 'https://kvkgyrifhqiukgjkojyx.supabase.co'
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
     steps:
       - uses: actions/checkout@v4
 
@@ -25,11 +28,65 @@ jobs:
         with:
           channel: 'stable'
 
+      - name: Setup Consistent Signing Keystore
+        run: |
+          mkdir -p ~/.android
+          if [ -n "$SUPABASE_SERVICE_KEY" ]; then
+            python3 - << 'EOF'
+          import json, os, subprocess, urllib.request, urllib.error
+
+          url = os.environ['SUPABASE_URL']
+          key = os.environ['SUPABASE_SERVICE_KEY']
+          ks_path = os.path.expanduser('~/.android/debug.keystore')
+          headers = {'apikey': key, 'Authorization': f'Bearer {key}'}
+
+          # ساخت باکت خصوصی app-keys در صورت نبود
+          try:
+              req = urllib.request.Request(
+                  f"{url}/storage/v1/bucket",
+                  data=json.dumps({"id": "app-keys", "name": "app-keys", "public": False}).encode(),
+                  headers={**headers, 'Content-Type': 'application/json'},
+                  method='POST',
+              )
+              urllib.request.urlopen(req)
+          except Exception:
+              pass
+
+          # دریافت کلید امضای ثابت یا ساخت و ذخیره آن برای همیشه
+          try:
+              req = urllib.request.Request(f"{url}/storage/v1/object/app-keys/debug.keystore", headers=headers)
+              with urllib.request.urlopen(req) as resp:
+                  with open(ks_path, 'wb') as f:
+                      f.write(resp.read())
+              print("Loaded existing consistent signing keystore.")
+          except Exception:
+              subprocess.run([
+                  "keytool", "-genkey", "-v",
+                  "-keystore", ks_path,
+                  "-storepass", "android",
+                  "-alias", "androiddebugkey",
+                  "-keypass", "android",
+                  "-keyalg", "RSA", "-keysize", "2048", "-validity", "10000",
+                  "-dname", "CN=HA Tasks,O=HA,C=IR"
+              ], check=True)
+              with open(ks_path, 'rb') as f:
+                  data = f.read()
+              req = urllib.request.Request(
+                  f"{url}/storage/v1/object/app-keys/debug.keystore",
+                  data=data,
+                  headers={**headers, 'Content-Type': 'application/octet-stream', 'x-upsert': 'true'},
+                  method='POST',
+              )
+              urllib.request.urlopen(req)
+              print("Created and saved new consistent signing keystore.")
+          EOF
+          fi
+
       - name: Generate Android files, Font & Green H.A. Logo
         run: |
           flutter create . --platforms=android
           git checkout -- pubspec.yaml lib/
-          sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <application/' android/app/src/main/AndroidManifest.xml
+          sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"\/>\n    <application/' android/app/src/main/AndroidManifest.xml
           sed -i 's/android:label="[^"]*"/android:label="H.A. Tasks"/' android/app/src/main/AndroidManifest.xml
           mkdir -p assets/fonts
           curl -fL "https://raw.githubusercontent.com/rastikerdar/vazirmatn/v33.003/fonts/ttf/Vazirmatn-Regular.ttf" -o assets/fonts/Vazirmatn-Regular.ttf
@@ -59,7 +116,24 @@ jobs:
       - name: Build APK
         run: |
           flutter pub get
-          flutter build apk --release
+          flutter build apk --release \
+            --build-number=${{ github.run_number }} \
+            --dart-define=APP_BUILD_NUMBER=${{ github.run_number }}
+
+      - name: Publish Latest Android Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk app-release.apk
+          echo "{\"build\": ${{ github.run_number }}, \"apk_url\": \"https://github.com/${{ github.repository }}/releases/latest/download/app-release.apk\"}" > version.json
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest app-release.apk version.json --clobber
+            gh release edit latest --title "H.A. Tasks Android (Build #${{ github.run_number }})"
+          else
+            gh release create latest app-release.apk version.json \
+              --title "H.A. Tasks Android (Build #${{ github.run_number }})" \
+              --notes "آخرین نسخه اپلیکیشن اندروید H.A. Tasks"
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
