@@ -25,11 +25,14 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Generate Android files
+      - name: Generate Android files & Bundle Vazirmatn Font
         run: |
           flutter create . --platforms=android
           git checkout -- pubspec.yaml lib/main.dart
           sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <application/' android/app/src/main/AndroidManifest.xml
+          mkdir -p assets/fonts
+          curl -fL "https://raw.githubusercontent.com/rastikerdar/vazirmatn/v33.003/fonts/ttf/Vazirmatn-Regular.ttf" -o assets/fonts/Vazirmatn-Regular.ttf
+          curl -fL "https://raw.githubusercontent.com/rastikerdar/vazirmatn/v33.003/fonts/ttf/Vazirmatn-Bold.ttf" -o assets/fonts/Vazirmatn-Bold.ttf
 
       - name: Build APK
         run: |
@@ -54,10 +57,13 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Generate Web files and Build
+      - name: Generate Web files, Bundle Font & Build
         run: |
           flutter create . --platforms=web
           git checkout -- pubspec.yaml lib/main.dart
+          mkdir -p assets/fonts
+          curl -fL "https://raw.githubusercontent.com/rastikerdar/vazirmatn/v33.003/fonts/ttf/Vazirmatn-Regular.ttf" -o assets/fonts/Vazirmatn-Regular.ttf
+          curl -fL "https://raw.githubusercontent.com/rastikerdar/vazirmatn/v33.003/fonts/ttf/Vazirmatn-Bold.ttf" -o assets/fonts/Vazirmatn-Bold.ttf
           flutter pub get
           flutter build web --release --base-href "/${{ github.event.repository.name }}/"
 
