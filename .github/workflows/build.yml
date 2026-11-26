@@ -138,6 +138,7 @@ jobs:
         run: |
           flutter pub get
           flutter build apk --release \
+            --target-platform android-arm64 \
             --build-number=${{ github.run_number }} \
             --dart-define=APP_BUILD_NUMBER=${{ github.run_number }}
 
@@ -175,7 +176,7 @@ jobs:
               data=apk_bytes,
               headers={
                   **headers,
-                  'Content-Type': 'application/vnd.android.package-archive',
+                  'Content-Type': 'application/octet-stream',
                   'x-upsert': 'true',
                   'cache-control': '60',
               },
