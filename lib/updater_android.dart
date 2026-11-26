@@ -8,7 +8,7 @@ import 'core.dart';
 const int currentBuildNumber =
     int.fromEnvironment('APP_BUILD_NUMBER', defaultValue: 0);
 const String versionJsonUrl =
-    'https://github.com/goudygood-145/arya-tasks/releases/latest/download/version.json';
+    'https://kvkgyrifhqiukgjkojyx.supabase.co/storage/v1/object/public/app-releases/version.json';
 const String updateApkFileName = 'ha_tasks_update.apk';
 
 Future<void> _cleanupDownloadedApk() async {
@@ -32,7 +32,9 @@ Future<void> checkForAndroidUpdate(BuildContext context) async {
   try {
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 8);
-    final req = await client.getUrl(Uri.parse(versionJsonUrl));
+    final req = await client.getUrl(
+      Uri.parse('$versionJsonUrl?t=${DateTime.now().millisecondsSinceEpoch}'),
+    );
     final resp = await req.close().timeout(const Duration(seconds: 8));
     if (resp.statusCode != 200) {
       client.close();
