@@ -1555,35 +1555,39 @@ void _onSettingsChanged() {
                       ],
                     ),
             ),
-            // ابزارهای پایین سایدبار
+// دکمه‌های ساخت لیست و فولدر شخصی کنار هم
             const Divider(height: 1),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              child: Wrap(
-                spacing: 4,
-                runSpacing: 4,
-                alignment: WrapAlignment.spaceEvenly,
+              padding: const EdgeInsets.all(10),
+              child: Row(
                 children: [
-                  IconButton(
-                    tooltip: tr('سطل زباله (۳۰ روزه)', 'Trash Bin'),
-                    icon: const Icon(Icons.delete_outline_rounded),
-                    onPressed: () {
-                      showDialog(
-                        context: context,
-                        builder: (_) =>
-                            TrashBinDialog(onRestored: _loadInitialData),
-                      );
-                    },
+                  Expanded(
+                    child: FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 10),
+                      ),
+                      onPressed: _createListDialog,
+                      icon: const Icon(Icons.add, size: 18),
+                      label: Text(
+                        tr('لیست جدید', 'New List'),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
                   ),
-                  IconButton(
-                    tooltip: tr('ساخت فولدر شخصی', 'New Personal Folder'),
-                    icon: const Icon(Icons.create_new_folder_outlined),
+                  const SizedBox(width: 8),
+                  FilledButton.tonalIcon(
+                    style: FilledButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                    ),
                     onPressed: () async {
                       final c = TextEditingController();
                       final name = await showDialog<String>(
                         context: context,
                         builder: (ctx) => AlertDialog(
-                          title: Text(tr('فولدر شخصی جدید', 'New Personal Folder')),
+                          title: Text(
+                              tr('فولدر شخصی جدید', 'New Personal Folder')),
                           content: TextField(
                             controller: c,
                             autofocus: true,
@@ -1595,12 +1599,14 @@ void _onSettingsChanged() {
                           ),
                           actions: [
                             TextButton(
-                                onPressed: () => Navigator.pop(ctx),
-                                child: Text(tr('انصراف', 'Cancel'))),
+                              onPressed: () => Navigator.pop(ctx),
+                              child: Text(tr('انصراف', 'Cancel')),
+                            ),
                             FilledButton(
-                                onPressed: () =>
-                                    Navigator.pop(ctx, c.text.trim()),
-                                child: Text(tr('ساخت', 'Create'))),
+                              onPressed: () =>
+                                  Navigator.pop(ctx, c.text.trim()),
+                              child: Text(tr('ساخت', 'Create')),
+                            ),
                           ],
                         ),
                       );
@@ -1608,44 +1614,10 @@ void _onSettingsChanged() {
                         await appSettings.addPersonalFolder(name);
                       }
                     },
-                  ),
-                  IconButton(
-                    tooltip: tr('ورود از Microsoft To Do', 'Import To Do'),
-                    icon: const Icon(Icons.download_for_offline_outlined),
-                    onPressed: () {
-                      showDialog(
-                        context: context,
-                        builder: (_) => TodoImportDialog(
-                          currentUserEmail: currentUserEmail,
-                          currentUserName: currentUserName,
-                          onImported: _loadInitialData,
-                        ),
-                      );
-                    },
-                  ),
-                  IconButton(
-                    tooltip: tr('بازیابی از فایل بکاپ', 'Restore Backup'),
-                    icon: const Icon(Icons.restore_page_outlined),
-                    onPressed: () =>
-                        showBackupRestoreDialog(context, _loadInitialData),
-                  ),
-                  IconButton(
-                    tooltip: tr('خروج از حساب', 'Sign Out'),
-                    icon: const Icon(Icons.logout, color: Colors.redAccent),
-                    onPressed: () => supabase.auth.signOut(),
+                    icon: const Icon(Icons.create_new_folder_outlined, size: 18),
+                    label: Text(tr('فولدر', 'Folder')),
                   ),
                 ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-              child: SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: _createListDialog,
-                  icon: const Icon(Icons.add),
-                  label: Text(tr('ساخت لیست جدید', 'New List')),
-                ),
               ),
             ),
           ],
