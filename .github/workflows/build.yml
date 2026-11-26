@@ -43,14 +43,15 @@ jobs:
           mkdir -p ~/.android
           if [ -n "$SUPABASE_SERVICE_KEY" ]; then
             python3 - << 'EOF'
-          import json, os, subprocess, urllib.request, urllib.error
+          import json, os, subprocess, urllib.request
 
-          url = os.environ['SUPABASE_URL']
-          key = os.environ['SUPABASE_SERVICE_KEY']
+          url = os.environ['SUPABASE_URL'].rstrip('/')
+          key = os.environ['SUPABASE_SERVICE_KEY'].strip()
           ks_path = os.path.expanduser('~/.android/debug.keystore')
-          headers = {'apikey': key, 'Authorization': f'Bearer {key}'}
+          headers = {'apikey': key, 'User-Agent': 'HA-Tasks-Build/1.0'}
+          if key.startswith('eyJ'):
+              headers['Authorization'] = f'Bearer {key}'
 
-          # ساخت باکت خصوصی app-keys در صورت نبود
           try:
               req = urllib.request.Request(
                   f"{url}/storage/v1/bucket",
@@ -62,7 +63,6 @@ jobs:
           except Exception:
               pass
 
-          # دریافت کلید امضای ثابت یا ساخت و ذخیره آن برای همیشه
           try:
               req = urllib.request.Request(f"{url}/storage/v1/object/app-keys/debug.keystore", headers=headers)
               with urllib.request.urlopen(req) as resp:
@@ -130,20 +130,67 @@ jobs:
             --build-number=${{ github.run_number }} \
             --dart-define=APP_BUILD_NUMBER=${{ github.run_number }}
 
-      - name: Publish Latest Android Release
+      - name: Publish Latest Android Release to Supabase
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_NUM: ${{ github.run_number }}
         run: |
-          cp build/app/outputs/flutter-apk/app-release.apk app-release.apk
-          echo "{\"build\": ${{ github.run_number }}, \"apk_url\": \"https://github.com/${{ github.repository }}/releases/latest/download/app-release.apk\"}" > version.json
-          if gh release view latest >/dev/null 2>&1; then
-            gh release upload latest app-release.apk version.json --clobber
-            gh release edit latest --title "H.A. Tasks Android (Build #${{ github.run_number }})"
-          else
-            gh release create latest app-release.apk version.json \
-              --title "H.A. Tasks Android (Build #${{ github.run_number }})" \
-              --notes "آخرین نسخه اپلیکیشن اندروید H.A. Tasks"
-          fi
+          python3 - << 'EOF'
+          import json, os, urllib.request, urllib.error
+
+          url = os.environ['SUPABASE_URL'].rstrip('/')
+          key = os.environ['SUPABASE_SERVICE_KEY'].strip()
+          build_num = int(os.environ['BUILD_NUM'])
+
+          headers = {'apikey': key, 'User-Agent': 'HA-Tasks-Build/1.0'}
+          if key.startswith('eyJ'):
+              headers['Authorization'] = f'Bearer {key}'
+
+          # ساخت باکت عمومی app-releases در صورت نبود
+          try:
+              req = urllib.request.Request(
+                  f"{url}/storage/v1/bucket",
+                  data=json.dumps({"id": "app-releases", "name": "app-releases", "public": True}).encode(),
+                  headers={**headers, 'Content-Type': 'application/json'},
+                  method='POST',
+              )
+              urllib.request.urlopen(req)
+          except Exception:
+              pass
+
+          # آپلود فایل APK (جایگزین نسخه قبلی می‌شود تا فضای سرور اشغال نشود)
+          with open('build/app/outputs/flutter-apk/app-release.apk', 'rb') as f:
+              apk_bytes = f.read()
+
+          req = urllib.request.Request(
+              f"{url}/storage/v1/object/app-releases/app-release.apk",
+              data=apk_bytes,
+              headers={
+                  **headers,
+                  'Content-Type': 'application/vnd.android.package-archive',
+                  'x-upsert': 'true',
+                  'cache-control': '60',
+              },
+              method='POST',
+          )
+          urllib.request.urlopen(req)
+
+          # آپلود فایل version.json
+          apk_public_url = f"{url}/storage/v1/object/public/app-releases/app-release.apk?v={build_num}"
+          version_data = json.dumps({"build": build_num, "apk_url": apk_public_url}).encode('utf-8')
+          req = urllib.request.Request(
+              f"{url}/storage/v1/object/app-releases/version.json",
+              data=version_data,
+              headers={
+                  **headers,
+                  'Content-Type': 'application/json',
+                  'x-upsert': 'true',
+                  'cache-control': '0',
+              },
+              method='POST',
+          )
+          urllib.request.urlopen(req)
+          print(f"Published Build #{build_num} to Supabase successfully.")
+          EOF
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
