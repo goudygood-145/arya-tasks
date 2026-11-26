@@ -334,6 +334,57 @@ class _UserSettingsDialogState extends State<UserSettingsDialog> {
                               ),
                       );
                     }),
+                  const Divider(height: 28),
+                  Text(
+                    tr('ابزارها و مدیریت داده‌ها', 'Tools & Data'),
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 6),
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.delete_outline_rounded,
+                        color: Colors.orange),
+                    title: Text(tr('سطل زباله (۳۰ روزه)', 'Trash Bin (30 Days)')),
+                    onTap: () {
+                      showDialog(
+                        context: context,
+                        builder: (_) =>
+                            TrashBinDialog(onRestored: widget.onProfileUpdated),
+                      );
+                    },
+                  ),
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.download_for_offline_outlined,
+                        color: cs.primary),
+                    title: Text(tr('ورود از Microsoft To Do',
+                        'Import from Microsoft To Do')),
+                    onTap: () {
+                      final email = supabase.auth.currentUser?.email ?? '';
+                      final name =
+                          (myProfile?['full_name'] as String?) ?? email;
+                      showDialog(
+                        context: context,
+                        builder: (_) => TodoImportDialog(
+                          currentUserEmail: email,
+                          currentUserName: name,
+                          onImported: widget.onProfileUpdated,
+                        ),
+                      );
+                    },
+                  ),
+                  ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading:
+                        Icon(Icons.restore_page_outlined, color: cs.primary),
+                    title: Text(
+                        tr('بازیابی از فایل بکاپ', 'Restore from Backup')),
+                    onTap: () => showBackupRestoreDialog(
+                        context, widget.onProfileUpdated),
+                  ),
                   if (isSuperAdmin) ...[
                     const Divider(height: 28),
                     Row(
