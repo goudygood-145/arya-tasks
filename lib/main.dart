@@ -1741,7 +1741,14 @@ void _onSettingsChanged() {
         filtered.where((t) => t['is_completed'] != true).toList();
     final doneTasks = filtered.where((t) => t['is_completed'] == true).toList();
 
-    return Container(
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {
+        if (selectedTaskId != null) {
+          setState(() => selectedTaskId = null);
+        }
+      },
+      child: Container(
       color: cs.surfaceContainerLow,
       child: Column(
         children: [
@@ -1864,6 +1871,7 @@ void _onSettingsChanged() {
                   ),
           ),
         ],
+      ),
       ),
     );
   }
