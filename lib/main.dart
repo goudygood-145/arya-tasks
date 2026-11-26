@@ -299,7 +299,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String? selectedTaskId;
   String searchQuery = '';
   bool showSearch = false;
-  String sortBy = 'created'; // created, due, priority, starred
+  String get sortBy => appSettings.sortBy;
 
   bool loadingLists = true;
   int totalStorageUsedBytes = 0;
@@ -1725,8 +1725,14 @@ void _onSettingsChanged() {
         return da.compareTo(db);
       }
       if (sortBy == 'priority') {
-        return prioWeight(a['priority'] as String?)
-            .compareTo(prioWeight(b['priority'] as String?));
+        final sa = a['is_starred'] == true ? 0 : 1;
+        final sb = b['is_starred'] == true ? 0 : 1;
+        if (sa != sb) return sa.compareTo(sb);
+        final pa = prioWeight(a['priority'] as String?);
+        final pb = prioWeight(b['priority'] as String?);
+        if (pa != pb) return pa.compareTo(pb);
+        return ((b['created_at'] as String?) ?? '')
+            .compareTo((a['created_at'] as String?) ?? '');
       }
       if (sortBy == 'starred') {
         final sa = a['is_starred'] == true ? 0 : 1;
@@ -2198,16 +2204,28 @@ void _onSettingsChanged() {
                   PopupMenuButton<String>(
                     tooltip: tr('مرتب‌سازی', 'Sort'),
                     icon: const Icon(Icons.sort_rounded),
-                    onSelected: (v) => setState(() => sortBy = v),
+                    onSelected: (v) => appSettings.setSortBy(v),
                     itemBuilder: (_) => [
-                      PopupMenuItem(
-                          value: 'created', child: Text(tr('جدیدترین‌ها', 'Newest'))),
-                      PopupMenuItem(
-                          value: 'due', child: Text(tr('تاریخ سررسید', 'Due Date'))),
-                      PopupMenuItem(
-                          value: 'priority', child: Text(tr('اولویت', 'Priority'))),
-                      PopupMenuItem(
-                          value: 'starred', child: Text(tr('ستاره‌دارها', 'Starred'))),
+                      CheckedPopupMenuItem(
+                        value: 'created',
+                        checked: sortBy == 'created',
+                        child: Text(tr('جدیدترین‌ها', 'Newest')),
+                      ),
+                      CheckedPopupMenuItem(
+                        value: 'due',
+                        checked: sortBy == 'due',
+                        child: Text(tr('تاریخ سررسید', 'Due Date')),
+                      ),
+                      CheckedPopupMenuItem(
+                        value: 'priority',
+                        checked: sortBy == 'priority',
+                        child: Text(tr('اولویت', 'Priority')),
+                      ),
+                      CheckedPopupMenuItem(
+                        value: 'starred',
+                        checked: sortBy == 'starred',
+                        child: Text(tr('ستاره‌دارها', 'Starred')),
+                      ),
                     ],
                   ),
                   // زنگوله اعلان‌ها با شمارنده خوانده‌نشده
