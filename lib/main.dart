@@ -1471,14 +1471,10 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
 
   Future<void> _uploadAttachment() async {
     try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.any,
-        withData: true,
-      );
-      if (result == null || result.files.isEmpty) return;
+      final file = await FilePicker.pickFile(type: FileType.any);
+      if (file == null) return;
 
-      final file = result.files.single;
-      final bytes = file.bytes;
+      final Uint8List? bytes = await file.readAsBytes();
       if (bytes == null) {
         _showMsg('امکان خواندن فایل انتخاب‌شده وجود ندارد.');
         return;
