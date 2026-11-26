@@ -1,25 +1,14 @@
-import 'dart:typed_data';
-import 'package:file_picker/file_picker.dart';
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:shamsi_date/shamsi_date.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:url_launcher/url_launcher.dart';
-
-const String supabaseUrl = 'https://kvkgyrifhqiukgjkojyx.supabase.co';
-const String supabaseAnonKey = 'sb_publishable_fClXOE3GkV3Gj8VeVTPMSQ_erzUihwc';
-
-// سقف فضای رایگان فایل‌ها در Supabase برابر ۱ گیگابایت (۱۰۲۴ مگابایت) است
-const int storageQuotaBytes = 1024 * 1024 * 1024;
-// آستانه هشدار: وقتی ۱۰۰ مگابایت یا کمتر باقی مانده باشد
-const int lowStorageThresholdBytes = 100 * 1024 * 1024;
-// بازه یادآوری پاکسازی فایل‌های کارهای تیک‌خورده (هر ۷ روز یک‌بار)
-const int cleanupReminderDays = 7;
-
-typedef JsonRow = Map<String, dynamic>;
+import 'core.dart';
+import 'settings_and_tools.dart';
+import 'task_detail.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await appSettings.load();
   await Supabase.initialize(
     url: supabaseUrl,
     anonKey: supabaseAnonKey,
@@ -27,103 +16,30 @@ Future<void> main() async {
   runApp(const AryaTasksApp());
 }
 
-final supabase = Supabase.instance.client;
-
-String toPersianDigits(String input) {
-  const en = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
-  const fa = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
-  var res = input;
-  for (int i = 0; i < 10; i++) {
-    res = res.replaceAll(en[i], fa[i]);
-  }
-  return res;
-}
-
-String formatShamsi(String? isoDate, {bool withTime = false}) {
-  if (isoDate == null || isoDate.isEmpty) return '';
-  final dt = DateTime.tryParse(isoDate)?.toLocal();
-  if (dt == null) return '';
-  final j = Jalali.fromDateTime(dt);
-  final dateStr =
-      '${j.year}/${j.month.toString().padLeft(2, '0')}/${j.day.toString().padLeft(2, '0')}';
-  if (!withTime) return toPersianDigits(dateStr);
-  final timeStr =
-      '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-  return toPersianDigits('$dateStr - $timeStr');
-}
-
-String formatBytes(int bytes) {
-  if (bytes < 1024) return '${toPersianDigits(bytes.toString())} بایت';
-  final kb = bytes / 1024;
-  if (kb < 1024) {
-    return '${toPersianDigits(kb.toStringAsFixed(1))} کیلوبایت';
-  }
-  final mb = kb / 1024;
-  return '${toPersianDigits(mb.toStringAsFixed(1))} مگابایت';
-}
-
-String buildSafeStoragePath(String taskId, String originalName) {
-  final dotIndex = originalName.lastIndexOf('.');
-  String ext = '';
-  if (dotIndex != -1 && dotIndex < originalName.length - 1) {
-    final rawExt = originalName.substring(dotIndex + 1).toLowerCase();
-    final cleanExt = rawExt.replaceAll(RegExp(r'[^a-z0-9]'), '');
-    if (cleanExt.isNotEmpty) ext = '.$cleanExt';
-  }
-  final ts = DateTime.now().millisecondsSinceEpoch;
-  return '$taskId/$ts$ext';
-}
-
-Future<int> fetchTotalStorageBytes() async {
-  try {
-    final res = await supabase.rpc('get_total_storage_bytes');
-    return (res as num?)?.toInt() ?? 0;
-  } catch (_) {
-    return 0;
-  }
-}
-
-Future<void> deleteStorageFilesForTask(String taskId) async {
-  try {
-    final rows = await supabase
-        .from('task_attachments')
-        .select('file_path')
-        .eq('task_id', taskId);
-    final paths = rows
-        .map((r) => r['file_path'] as String?)
-        .whereType<String>()
-        .toList();
-    if (paths.isNotEmpty) {
-      await supabase.storage.from('task-files').remove(paths);
-    }
-  } catch (_) {}
-}
-
 class AryaTasksApp extends StatelessWidget {
   const AryaTasksApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final baseTheme = ThemeData(
-      useMaterial3: true,
-      fontFamily: 'Vazirmatn',
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: const Color(0xFF1F6FEB),
-        surface: const Color(0xFFF6F8FA),
-      ),
-    );
-
-    return MaterialApp(
-      title: 'مدیریت کار تیمی',
-      debugShowCheckedModeBanner: false,
-      theme: baseTheme,
-      builder: (context, child) {
-        return Directionality(
-          textDirection: TextDirection.rtl,
-          child: child ?? const SizedBox.shrink(),
+    return AnimatedBuilder(
+      animation: appSettings,
+      builder: (context, _) {
+        return MaterialApp(
+          title: 'H.A. Tasks',
+          debugShowCheckedModeBanner: false,
+          theme: appSettings.buildTheme(Brightness.light),
+          darkTheme: appSettings.buildTheme(Brightness.dark),
+          themeMode: appSettings.isDark ? ThemeMode.dark : ThemeMode.light,
+          builder: (context, child) {
+            return Directionality(
+              textDirection:
+                  appSettings.isRtl ? TextDirection.rtl : TextDirection.ltr,
+              child: child ?? const SizedBox.shrink(),
+            );
+          },
+          home: const AuthGate(),
         );
       },
-      home: const AuthGate(),
     );
   }
 }
@@ -175,42 +91,81 @@ class _AuthScreenState extends State<AuthScreen> {
     final name = nameCtrl.text.trim();
 
     if (email.isEmpty || pass.length < 6) {
-      _showMsg('لطفاً ایمیل معتبر و رمز عبور حداقل ۶ کاراکتری وارد کنید.');
+      _showMsg(tr('ایمیل معتبر و رمز حداقل ۶ کاراکتری وارد کنید.',
+          'Enter valid email and 6+ char password.'));
       return;
     }
     if (!isLogin && name.isEmpty) {
-      _showMsg('لطفاً نام و نام خانوادگی خود را وارد کنید.');
+      _showMsg(tr('نام و نام خانوادگی را وارد کنید.', 'Enter your full name.'));
       return;
     }
 
     setState(() => loading = true);
     try {
       if (isLogin) {
-        await supabase.auth.signInWithPassword(email: email, password: pass);
+        final res = await supabase.auth
+            .signInWithPassword(email: email, password: pass);
+        final uid = res.user?.id;
+        if (uid != null) {
+          final prof = await supabase
+              .from('profiles')
+              .select('is_active')
+              .eq('id', uid)
+              .maybeSingle();
+          if (prof != null && prof['is_active'] == false) {
+            await supabase.auth.signOut();
+            _showMsg(tr('حساب کاربری شما توسط مدیر کل غیرفعال شده است.',
+                'Your account has been deactivated by admin.'));
+            return;
+          }
+        }
       } else {
-        await supabase.auth.signUp(
+        final res = await supabase.auth.signUp(
           email: email,
           password: pass,
           data: {'full_name': name},
         );
+        if (res.session == null && mounted) {
+          await showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: Text(tr('تأیید ایمیل الزامی است', 'Email Confirmation Required')),
+              content: Text(
+                tr(
+                  'لینک تأیید به ایمیل «$email» ارسال شد. لطفاً صندوق ورودی (یا پوشه Spam) ایمیل خود را باز کرده و روی لینک تأیید کلیک کنید، سپس وارد شوید.',
+                  'A verification link was sent to $email. Please confirm your email before signing in.',
+                ),
+              ),
+              actions: [
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: Text(tr('متوجه شدم', 'OK')),
+                ),
+              ],
+            ),
+          );
+          setState(() => isLogin = true);
+        }
       }
     } on AuthException catch (e) {
-      _showMsg('خطا: ${e.message}');
+      _showMsg('${tr('خطا:', 'Error:')} ${e.message}');
     } catch (e) {
-      _showMsg('خطای ارتباط با سرور: $e');
+      _showMsg('${tr('خطای ارتباط با سرور:', 'Connection error:')} $e');
     } finally {
       if (mounted) setState(() => loading = false);
     }
   }
 
   void _showMsg(String msg) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   @override
   Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
     return Scaffold(
-      backgroundColor: const Color(0xFFEEF2F6),
+      backgroundColor: cs.surfaceContainerLow,
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
@@ -219,34 +174,32 @@ class _AuthScreenState extends State<AuthScreen> {
             child: Card(
               elevation: 3,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(18),
               ),
               child: Padding(
                 padding: const EdgeInsets.all(28),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(
-                      Icons.check_circle_outline_rounded,
-                      size: 56,
-                      color: Color(0xFF1F6FEB),
-                    ),
-                    const SizedBox(height: 12),
+                    const HaLogoBadge(size: 64),
+                    const SizedBox(height: 14),
                     Text(
-                      isLogin ? 'ورود به میز کار شرکت' : 'ثبت‌نام همکار جدید',
+                      isLogin
+                          ? tr('ورود به میز کار H.A.', 'Sign in to H.A. Tasks')
+                          : tr('ثبت‌نام همکار جدید', 'Create Employee Account'),
                       style: const TextStyle(
                         fontSize: 20,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 22),
                     if (!isLogin) ...[
                       TextField(
                         controller: nameCtrl,
-                        decoration: const InputDecoration(
-                          labelText: 'نام و نام خانوادگی',
-                          prefixIcon: Icon(Icons.person_outline),
-                          border: OutlineInputBorder(),
+                        decoration: InputDecoration(
+                          labelText: tr('نام و نام خانوادگی', 'Full Name'),
+                          prefixIcon: const Icon(Icons.person_outline),
+                          border: const OutlineInputBorder(),
                         ),
                       ),
                       const SizedBox(height: 14),
@@ -255,10 +208,10 @@ class _AuthScreenState extends State<AuthScreen> {
                       controller: emailCtrl,
                       keyboardType: TextInputType.emailAddress,
                       textDirection: TextDirection.ltr,
-                      decoration: const InputDecoration(
-                        labelText: 'ایمیل سازمانی یا شخصی',
-                        prefixIcon: Icon(Icons.email_outlined),
-                        border: OutlineInputBorder(),
+                      decoration: InputDecoration(
+                        labelText: tr('ایمیل سازمانی یا شخصی', 'Email'),
+                        prefixIcon: const Icon(Icons.email_outlined),
+                        border: const OutlineInputBorder(),
                       ),
                     ),
                     const SizedBox(height: 14),
@@ -268,7 +221,7 @@ class _AuthScreenState extends State<AuthScreen> {
                       textDirection: TextDirection.ltr,
                       onSubmitted: (_) => _submit(),
                       decoration: InputDecoration(
-                        labelText: 'رمز عبور (حداقل ۶ کاراکتر)',
+                        labelText: tr('رمز عبور (حداقل ۶ کاراکتر)', 'Password (6+ chars)'),
                         prefixIcon: const Icon(Icons.lock_outline),
                         suffixIcon: IconButton(
                           icon: Icon(
@@ -276,9 +229,8 @@ class _AuthScreenState extends State<AuthScreen> {
                                 ? Icons.visibility_outlined
                                 : Icons.visibility_off_outlined,
                           ),
-                          onPressed: () {
-                            setState(() => obscurePass = !obscurePass);
-                          },
+                          onPressed: () =>
+                              setState(() => obscurePass = !obscurePass),
                         ),
                         border: const OutlineInputBorder(),
                       ),
@@ -294,11 +246,11 @@ class _AuthScreenState extends State<AuthScreen> {
                                 width: 22,
                                 height: 22,
                                 child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
+                                    strokeWidth: 2, color: Colors.white),
                               )
-                            : Text(isLogin ? 'ورود' : 'ساخت حساب کاربری'),
+                            : Text(isLogin
+                                ? tr('ورود', 'Sign In')
+                                : tr('ثبت‌نام و ارسال ایمیل تأیید', 'Sign Up')),
                       ),
                     ),
                     const SizedBox(height: 12),
@@ -306,8 +258,8 @@ class _AuthScreenState extends State<AuthScreen> {
                       onPressed: () => setState(() => isLogin = !isLogin),
                       child: Text(
                         isLogin
-                            ? 'حساب ندارید؟ ثبت‌نام کنید'
-                            : 'قبلاً ثبت‌نام کرده‌اید؟ وارد شوید',
+                            ? tr('حساب ندارید؟ ثبت‌نام کنید', 'No account? Sign up')
+                            : tr('حساب دارید؟ وارد شوید', 'Have an account? Sign in'),
                       ),
                     ),
                   ],
@@ -331,235 +283,80 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   List<JsonRow> lists = [];
   Map<String, JsonRow> profilesMap = {};
+  Map<String, String> myListRoles = {};
   List<JsonRow> currentListMembers = [];
 
   String? selectedListId;
+  // all, today, overdue, starred, assigned, planned
   String smartFilter = 'all';
+  String? starredListFilterId;
   String? selectedTaskId;
+  String searchQuery = '';
+  bool showSearch = false;
+  String sortBy = 'created'; // created, due, priority, starred
+
   bool loadingLists = true;
   int totalStorageUsedBytes = 0;
 
   final quickAddCtrl = TextEditingController();
+  final searchCtrl = TextEditingController();
+  StreamSubscription? _sessionSub;
 
   String get currentUserId => supabase.auth.currentUser!.id;
   String get currentUserEmail => supabase.auth.currentUser?.email ?? '';
-
+  String get currentUserName =>
+      (profilesMap[currentUserId]?['full_name'] as String?) ?? currentUserEmail;
+  bool get isSuperAdmin => profilesMap[currentUserId]?['is_super_admin'] == true;
   bool get isStorageLow =>
       (storageQuotaBytes - totalStorageUsedBytes) <= lowStorageThresholdBytes;
+
+  bool _canEditList(String? listId) {
+    if (isSuperAdmin) return true;
+    if (listId == null) return true;
+    final role = myListRoles[listId];
+    return role == 'owner' || role == 'member';
+  }
+
+  bool _isOwnerOfList(String listId) {
+    if (isSuperAdmin) return true;
+    return myListRoles[listId] == 'owner';
+  }
 
   @override
   void initState() {
     super.initState();
+    _initSessionWatch();
     _loadInitialData();
-    _refreshStorageAndCheckReminder(checkWeeklyPopup: true);
+    _refreshStorage();
   }
 
   @override
   void dispose() {
+    _sessionSub?.cancel();
     quickAddCtrl.dispose();
+    searchCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _refreshStorageAndCheckReminder({
-    bool checkWeeklyPopup = false,
-  }) async {
+  Future<void> _initSessionWatch() async {
+    final sid = await registerCurrentSession();
+    if (sid == null) return;
+    _sessionSub = supabase
+        .from('user_sessions')
+        .stream(primaryKey: ['id'])
+        .eq('id', sid)
+        .listen((rows) async {
+      if (rows.isNotEmpty && rows.first['is_revoked'] == true) {
+        final p = await SharedPreferences.getInstance();
+        await p.remove('current_session_row_id');
+        await supabase.auth.signOut();
+      }
+    });
+  }
+
+  Future<void> _refreshStorage() async {
     final used = await fetchTotalStorageBytes();
-    if (!mounted) return;
-    setState(() => totalStorageUsedBytes = used);
-
-    if (checkWeeklyPopup) {
-      await _maybeShowCompletedFilesReminder();
-    }
-  }
-
-  Future<void> _maybeShowCompletedFilesReminder() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final lastShown = prefs.getInt('last_cleanup_reminder_ms') ?? 0;
-      final now = DateTime.now().millisecondsSinceEpoch;
-      const weekMs = cleanupReminderDays * 24 * 60 * 60 * 1000;
-
-      if (now - lastShown < weekMs) return;
-
-      final files = await _fetchCompletedTaskAttachments();
-      if (files.isEmpty || !mounted) return;
-
-      await _openCleanupDialog(files, markReminderSeen: true);
-    } catch (_) {}
-  }
-
-  Future<List<JsonRow>> _fetchCompletedTaskAttachments() async {
-    final data = await supabase
-        .from('task_attachments')
-        .select('id, file_name, file_path, file_size, tasks!inner(id, title, is_completed)')
-        .eq('tasks.is_completed', true)
-        .order('created_at', ascending: true);
-    return List<JsonRow>.from(data);
-  }
-
-  Future<void> _openCleanupDialog(
-    List<JsonRow> initialFiles, {
-    bool markReminderSeen = false,
-  }) async {
-    var files = List<JsonRow>.from(initialFiles);
-
-    await showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) {
-          final totalBytes = files.fold<int>(
-            0,
-            (sum, f) => sum + ((f['file_size'] as num?)?.toInt() ?? 0),
-          );
-          final remaining = (storageQuotaBytes - totalStorageUsedBytes)
-              .clamp(0, storageQuotaBytes);
-
-          return AlertDialog(
-            title: const Row(
-              children: [
-                Icon(Icons.cleaning_services_rounded, color: Colors.orange),
-                SizedBox(width: 8),
-                Expanded(child: Text('مدیریت و پاکسازی فایل‌های اضافی')),
-              ],
-            ),
-            content: SizedBox(
-              width: 440,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: isStorageLow
-                          ? Colors.red.shade50
-                          : Colors.blue.shade50,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      'فضای مصرف‌شده کل شرکت: ${formatBytes(totalStorageUsedBytes)} از ۱ گیگابایت\n'
-                      'فضای باقی‌مانده: ${formatBytes(remaining)}',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: isStorageLow
-                            ? Colors.red.shade900
-                            : Colors.blue.shade900,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  if (files.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 16),
-                      child: Text(
-                        'هیچ فایل ضمیمه‌ای روی کارهای انجام‌شده (تیک‌خورده) باقی نمانده است.',
-                      ),
-                    )
-                  else ...[
-                    Text(
-                      '${toPersianDigits(files.length.toString())} فایل (مجموعاً ${formatBytes(totalBytes)}) در کارهای تیک‌خورده وجود دارد. برای جلوگیری از پر شدن حجم سرور، فایل‌های غیرضروری را پاک کنید:',
-                      style: const TextStyle(fontSize: 13),
-                    ),
-                    const SizedBox(height: 10),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxHeight: 240),
-                      child: ListView.builder(
-                        shrinkWrap: true,
-                        itemCount: files.length,
-                        itemBuilder: (_, i) {
-                          final f = files[i];
-                          final taskInfo = f['tasks'] as JsonRow?;
-                          final taskTitle = taskInfo?['title'] ?? '';
-                          final size = (f['file_size'] as num?)?.toInt() ?? 0;
-                          return ListTile(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            leading: const Icon(Icons.attach_file, size: 18),
-                            title: Text(
-                              f['file_name'] as String,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text(
-                              'کار: $taskTitle • ${formatBytes(size)}',
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 11),
-                            ),
-                            trailing: IconButton(
-                              tooltip: 'حذف فایل از سرور',
-                              icon: const Icon(
-                                Icons.delete_outline,
-                                color: Colors.red,
-                                size: 20,
-                              ),
-                              onPressed: () async {
-                                try {
-                                  await supabase.storage
-                                      .from('task-files')
-                                      .remove([f['file_path'] as String]);
-                                  await supabase
-                                      .from('task_attachments')
-                                      .delete()
-                                      .eq('id', f['id']);
-                                  files.removeAt(i);
-                                  await _refreshStorageAndCheckReminder();
-                                  setDialogState(() {});
-                                } catch (e) {
-                                  _showMsg('خطا در حذف فایل: $e');
-                                }
-                              },
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            actions: [
-              if (files.isNotEmpty)
-                TextButton(
-                  style: TextButton.styleFrom(foregroundColor: Colors.red),
-                  onPressed: () async {
-                    try {
-                      final paths = files
-                          .map((f) => f['file_path'] as String)
-                          .toList();
-                      final ids = files.map((f) => f['id'] as String).toList();
-                      await supabase.storage.from('task-files').remove(paths);
-                      await supabase
-                          .from('task_attachments')
-                          .delete()
-                          .inFilter('id', ids);
-                      files.clear();
-                      await _refreshStorageAndCheckReminder();
-                      setDialogState(() {});
-                      _showMsg('تمام فایل‌های کارهای تیک‌خورده پاک شدند.');
-                    } catch (e) {
-                      _showMsg('خطا در پاکسازی: $e');
-                    }
-                  },
-                  child: const Text('حذف همه این فایل‌ها'),
-                ),
-              FilledButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: Text(markReminderSeen ? 'یادآوری در هفته بعد' : 'بستن'),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-
-    if (markReminderSeen) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt(
-        'last_cleanup_reminder_ms',
-        DateTime.now().millisecondsSinceEpoch,
-      );
-    }
+    if (mounted) setState(() => totalStorageUsedBytes = used);
   }
 
   Future<void> _loadInitialData() async {
@@ -571,6 +368,20 @@ class _HomeScreenState extends State<HomeScreen> {
         map[p['id'] as String] = JsonRow.from(p);
       }
 
+      if (map[currentUserId]?['is_active'] == false) {
+        await supabase.auth.signOut();
+        return;
+      }
+
+      final memData = await supabase
+          .from('list_members')
+          .select('list_id, role')
+          .eq('user_id', currentUserId);
+      final roleMap = <String, String>{};
+      for (final m in memData) {
+        roleMap[m['list_id'] as String] = m['role'] as String;
+      }
+
       final listData = await supabase
           .from('lists')
           .select()
@@ -579,10 +390,8 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
       setState(() {
         profilesMap = map;
+        myListRoles = roleMap;
         lists = List<JsonRow>.from(listData);
-        if (selectedListId == null && lists.isNotEmpty && smartFilter == 'all') {
-          selectedListId = lists.first['id'] as String;
-        }
         loadingLists = false;
       });
 
@@ -592,7 +401,7 @@ class _HomeScreenState extends State<HomeScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => loadingLists = false);
-        _showMsg('خطا در دریافت لیست‌ها: $e');
+        _showMsg('${tr('خطا در دریافت داده‌ها:', 'Error:')} $e');
       }
     }
   }
@@ -604,9 +413,7 @@ class _HomeScreenState extends State<HomeScreen> {
           .select('id, role, user_id, profiles(id, email, full_name)')
           .eq('list_id', listId);
       if (mounted) {
-        setState(() {
-          currentListMembers = List<JsonRow>.from(data);
-        });
+        setState(() => currentListMembers = List<JsonRow>.from(data));
       }
     } catch (_) {}
   }
@@ -615,56 +422,166 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       selectedListId = listId;
       smartFilter = filter;
+      starredListFilterId = null;
       selectedTaskId = null;
       currentListMembers = [];
     });
-    if (listId != null) {
-      _loadMembers(listId);
-    }
+    if (listId != null) _loadMembers(listId);
   }
 
+  // ساخت لیست جدید (پشتیبانی از کلید Enter)
   Future<void> _createListDialog() async {
     final ctrl = TextEditingController();
-    final ok = await showDialog<bool>(
+    final title = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('ساخت لیست کاری جدید'),
+        title: Text(tr('ساخت لیست کاری جدید', 'New List')),
         content: TextField(
           controller: ctrl,
           autofocus: true,
-          decoration: const InputDecoration(
-            hintText: 'مثلاً: واحد فنی، فروش، پیگیری‌ها...',
-            border: OutlineInputBorder(),
+          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+          decoration: InputDecoration(
+            hintText: tr('نام لیست را بنویسید و Enter بزنید...', 'List title + Enter...'),
+            border: const OutlineInputBorder(),
           ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('انصراف'),
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(tr('انصراف', 'Cancel')),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('ساخت لیست'),
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: Text(tr('ساخت لیست', 'Create')),
           ),
         ],
       ),
     );
 
-    if (ok == true && ctrl.text.trim().isNotEmpty) {
+    if (title != null && title.isNotEmpty) {
       try {
         final inserted = await supabase
             .from('lists')
             .insert({
-              'title': ctrl.text.trim(),
+              'title': title,
               'owner_id': currentUserId,
+              'created_by_name': currentUserName,
             })
             .select()
             .single();
         await _loadInitialData();
         _selectList(inserted['id'] as String);
       } catch (e) {
-        _showMsg('خطا در ساخت لیست: $e');
+        _showMsg('${tr('خطا در ساخت لیست:', 'Error:')} $e');
       }
+    }
+  }
+
+  Future<void> _copyListDialog(JsonRow list) async {
+    final ctrl = TextEditingController(text: '${list['title']} (کپی)');
+    bool includeTasks = true;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          title: Text(tr('کپی کردن لیست', 'Copy List')),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: ctrl,
+                decoration: InputDecoration(
+                  labelText: tr('نام لیست جدید', 'New List Name'),
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              RadioListTile<bool>(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                title: Text(tr('همراه با تسک‌ها و زیروظایف (تیک‌نخورده)',
+                    'With tasks & subtasks (unchecked)')),
+                value: true,
+                groupValue: includeTasks,
+                onChanged: (v) => setD(() => includeTasks = v!),
+              ),
+              RadioListTile<bool>(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                title: Text(tr('فقط خود لیست (بدون تسک‌ها)', 'Empty list (no tasks)')),
+                value: false,
+                groupValue: includeTasks,
+                onChanged: (v) => setD(() => includeTasks = v!),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(tr('انصراف', 'Cancel')),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(tr('کپی', 'Copy')),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (ok != true || ctrl.text.trim().isEmpty) return;
+    try {
+      final newList = await supabase
+          .from('lists')
+          .insert({
+            'title': ctrl.text.trim(),
+            'owner_id': currentUserId,
+            'created_by_name': currentUserName,
+          })
+          .select('id')
+          .single();
+      final newListId = newList['id'] as String;
+
+      if (includeTasks) {
+        final origTasks = await supabase
+            .from('tasks')
+            .select()
+            .eq('list_id', list['id'])
+            .isFilter('deleted_at', null);
+        for (final t in origTasks) {
+          final createdTask = await supabase
+              .from('tasks')
+              .insert({
+                'list_id': newListId,
+                'title': t['title'],
+                'notes': t['notes'] ?? '',
+                'priority': t['priority'] ?? 'normal',
+                'tags': t['tags'] ?? [],
+                'is_completed': false,
+                'created_by': currentUserId,
+                'created_by_name': currentUserName,
+              })
+              .select('id')
+              .single();
+          final origSubs = await supabase
+              .from('subtasks')
+              .select('title')
+              .eq('task_id', t['id']);
+          for (final s in origSubs) {
+            await supabase.from('subtasks').insert({
+              'task_id': createdTask['id'],
+              'title': s['title'],
+              'is_completed': false,
+            });
+          }
+        }
+      }
+      await _loadInitialData();
+      _selectList(newListId);
+      _showMsg(tr('لیست با موفقیت کپی شد.', 'List copied.'));
+    } catch (e) {
+      _showMsg('$e');
     }
   }
 
@@ -672,44 +589,412 @@ class _HomeScreenState extends State<HomeScreen> {
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('حذف لیست'),
+        title: Text(tr('حذف لیست', 'Delete List')),
         content: Text(
-          'آیا از حذف لیست «${list['title']}» و تمام کارها و فایل‌های داخل آن مطمئن هستید؟',
+          tr(
+            'آیا از حذف لیست «${list['title']}» مطمئن هستید؟',
+            'Delete list "${list['title']}"?',
+          ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('خیر'),
+            child: Text(tr('خیر', 'No')),
           ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('حذف'),
+            child: Text(tr('حذف', 'Delete')),
           ),
         ],
       ),
     );
+    if (confirm != true) return;
+    try {
+      final listTasks =
+          await supabase.from('tasks').select('id').eq('list_id', list['id']);
+      for (final t in listTasks) {
+        await deleteStorageFilesForTask(t['id'] as String);
+      }
+      await supabase.from('lists').delete().eq('id', list['id']);
+      if (selectedListId == list['id']) {
+        selectedListId = null;
+        selectedTaskId = null;
+      }
+      await _loadInitialData();
+      await _refreshStorage();
+    } catch (e) {
+      _showMsg(tr('فقط مدیر اصلی لیست می‌تواند آن را حذف کند.', 'Owner only.'));
+    }
+  }
 
-    if (confirm == true) {
-      try {
-        // ابتدا تمام فایل‌های ضمیمه تسک‌های این لیست را از سرور پاک می‌کنیم
-        final listTasks = await supabase
+  Future<void> _transferListOwnerDialog(JsonRow list) async {
+    final members = await supabase
+        .from('list_members')
+        .select('user_id, role, profiles(full_name, email)')
+        .eq('list_id', list['id']);
+    final candidates = List<JsonRow>.from(members)
+        .where((m) => m['user_id'] != list['owner_id'])
+        .toList();
+    if (!mounted) return;
+    if (candidates.isEmpty) {
+      _showMsg(tr('ابتدا همکار دیگری را به این لیست اضافه کنید.', 'Add another member first.'));
+      return;
+    }
+
+    String selectedUid = candidates.first['user_id'] as String;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          title: Text(tr('تغییر مدیر اصلی لیست', 'Transfer List Owner')),
+          content: DropdownButtonFormField<String>(
+            value: selectedUid,
+            items: candidates.map((m) {
+              final p = m['profiles'] as JsonRow?;
+              return DropdownMenuItem(
+                value: m['user_id'] as String,
+                child: Text('${p?['full_name'] ?? ''} (${p?['email'] ?? ''})'),
+              );
+            }).toList(),
+            onChanged: (v) => setD(() => selectedUid = v!),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(tr('انصراف', 'Cancel')),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(tr('انتقال مدیریت', 'Transfer')),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await supabase.rpc('transfer_list_owner', params: {
+        'target_list_id': list['id'],
+        'new_owner_id': selectedUid,
+      });
+      await _loadInitialData();
+      _showMsg(tr('مدیر اصلی لیست تغییر کرد.', 'List owner updated.'));
+    } catch (e) {
+      _showMsg('$e');
+    }
+  }
+
+  Future<void> _cleanupCompletedFilesForList(JsonRow list) async {
+    final files = await supabase
+        .from('task_attachments')
+        .select('id, file_name, file_path, file_size, tasks!inner(list_id, is_completed)')
+        .eq('tasks.list_id', list['id'])
+        .eq('tasks.is_completed', true);
+    final items = List<JsonRow>.from(files);
+    if (!mounted) return;
+    if (items.isEmpty) {
+      _showMsg(tr('فایل اضافه‌ای در کارهای تیک‌خورده این لیست وجود ندارد.',
+          'No files in completed tasks of this list.'));
+      return;
+    }
+    final totalSize = items.fold<int>(
+        0, (s, f) => s + ((f['file_size'] as num?)?.toInt() ?? 0));
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(tr('پاکسازی فایل‌های کارهای تیک‌خورده', 'Cleanup Completed Files')),
+        content: Text(
+          tr(
+            '${toPersianDigits(items.length.toString())} فایل (مجموعاً ${formatBytes(totalSize)}) در کارهای تیک‌خورده لیست «${list['title']}» پاک شوند؟',
+            'Delete ${items.length} files (${formatBytes(totalSize)}) from completed tasks?',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(tr('انصراف', 'Cancel')),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(tr('پاکسازی', 'Clean Up')),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final paths = items.map((f) => f['file_path'] as String).toList();
+    final ids = items.map((f) => f['id'] as String).toList();
+    await supabase.storage.from('task-files').remove(paths);
+    await supabase.from('task_attachments').delete().inFilter('id', ids);
+    await _refreshStorage();
+    _showMsg(tr('فایل‌های اضافی پاکسازی شدند.', 'Files cleaned up.'));
+  }
+
+  Future<void> _customizeListPersonalDialog(JsonRow list) async {
+    final lid = list['id'] as String;
+    String? folder = appSettings.listToFolder[lid];
+    int? colorVal = appSettings.listColors[lid];
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          title: Text(tr('فولدر و رنگ شخصی لیست', 'Personal Folder & Color')),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              DropdownButtonFormField<String?>(
+                value: appSettings.personalFolders.contains(folder) ? folder : null,
+                decoration: InputDecoration(
+                  labelText: tr('انتخاب فولدر شخصی', 'Personal Folder'),
+                  border: const OutlineInputBorder(),
+                ),
+                items: [
+                  DropdownMenuItem<String?>(
+                    value: null,
+                    child: Text(tr('بدون فولدر (اصلی)', 'No Folder')),
+                  ),
+                  ...appSettings.personalFolders.map(
+                    (f) => DropdownMenuItem<String?>(value: f, child: Text(f)),
+                  ),
+                ],
+                onChanged: (v) => setD(() => folder = v),
+              ),
+              const SizedBox(height: 16),
+              Text(tr('رنگ شخصی لیست:', 'Personal Color:')),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  ChoiceChip(
+                    label: Text(tr('پیش‌فرض', 'Default')),
+                    selected: colorVal == null,
+                    onSelected: (_) => setD(() => colorVal = null),
+                  ),
+                  ...listColorOptions.map((c) => InkWell(
+                        onTap: () => setD(() => colorVal = c.toARGB32()),
+                        child: CircleAvatar(
+                          radius: 15,
+                          backgroundColor: c,
+                          child: colorVal == c.toARGB32()
+                              ? const Icon(Icons.check,
+                                  color: Colors.white, size: 16)
+                              : null,
+                        ),
+                      )),
+                ],
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text(tr('انصراف', 'Cancel')),
+            ),
+            FilledButton(
+              onPressed: () async {
+                await appSettings.assignListFolder(lid, folder);
+                await appSettings.setListColor(lid, colorVal);
+                if (ctx.mounted) Navigator.pop(ctx);
+              },
+              child: Text(tr('ذخیره', 'Save')),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showListContextMenu(
+      Offset pos, JsonRow list, List<JsonRow> allActiveTasks) async {
+    final lid = list['id'] as String;
+    final owner = _isOwnerOfList(lid);
+    final selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx + 1, pos.dy + 1),
+      items: [
+        PopupMenuItem(
+          value: 'copy',
+          child: ListTile(
+            dense: true,
+            leading: const Icon(Icons.copy_rounded),
+            title: Text(tr('کپی کردن لیست', 'Copy List')),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'personal',
+          child: ListTile(
+            dense: true,
+            leading: const Icon(Icons.palette_outlined),
+            title: Text(tr('فولدر و رنگ شخصی', 'Personal Folder/Color')),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'csv',
+          child: ListTile(
+            dense: true,
+            leading: const Icon(Icons.table_view_outlined),
+            title: Text(tr('خروجی گزارش اکسل (CSV)', 'Export CSV')),
+          ),
+        ),
+        if (owner) ...[
+          PopupMenuItem(
+            value: 'transfer',
+            child: ListTile(
+              dense: true,
+              leading: const Icon(Icons.swap_horiz_rounded),
+              title: Text(tr('تغییر مدیر اصلی لیست', 'Transfer Owner')),
+            ),
+          ),
+          PopupMenuItem(
+            value: 'cleanup',
+            child: ListTile(
+              dense: true,
+              leading: const Icon(Icons.cleaning_services_outlined,
+                  color: Colors.orange),
+              title: Text(tr('پاکسازی فایل‌های تیک‌خورده', 'Cleanup Done Files')),
+            ),
+          ),
+          PopupMenuItem(
+            value: 'delete',
+            child: ListTile(
+              dense: true,
+              leading: const Icon(Icons.delete_outline, color: Colors.red),
+              title: Text(tr('حذف لیست', 'Delete List'),
+                  style: const TextStyle(color: Colors.red)),
+            ),
+          ),
+        ],
+      ],
+    );
+
+    if (selected == 'copy') await _copyListDialog(list);
+    if (selected == 'personal') await _customizeListPersonalDialog(list);
+    if (selected == 'transfer') await _transferListOwnerDialog(list);
+    if (selected == 'cleanup') await _cleanupCompletedFilesForList(list);
+    if (selected == 'delete') await _deleteList(list);
+    if (selected == 'csv' && mounted) {
+      final listTasks =
+          allActiveTasks.where((t) => t['list_id'] == lid).toList();
+      await exportTasksCsvToClipboard(
+          context, list['title'] as String, listTasks, profilesMap);
+    }
+  }
+
+  Future<void> _showTaskContextMenu(Offset pos, JsonRow task) async {
+    if (!_canEditList(task['list_id'] as String?)) return;
+    final selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx + 1, pos.dy + 1),
+      items: [
+        PopupMenuItem(
+          value: 'move',
+          child: ListTile(
+            dense: true,
+            leading: const Icon(Icons.drive_file_move_outline),
+            title: Text(tr('انتقال به لیست دیگر', 'Move to Another List')),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'copy',
+          child: ListTile(
+            dense: true,
+            leading: const Icon(Icons.copy_rounded),
+            title: Text(tr('کپی کردن کار', 'Duplicate Task')),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'delete',
+          child: ListTile(
+            dense: true,
+            leading: const Icon(Icons.delete_outline, color: Colors.red),
+            title: Text(tr('انتقال به سطل زباله', 'Move to Trash'),
+                style: const TextStyle(color: Colors.red)),
+          ),
+        ),
+      ],
+    );
+
+    if (selected == 'copy') {
+      await supabase.from('tasks').insert({
+        'list_id': task['list_id'],
+        'title': '${task['title']} (کپی)',
+        'notes': task['notes'] ?? '',
+        'priority': task['priority'] ?? 'normal',
+        'tags': task['tags'] ?? [],
+        'created_by': currentUserId,
+        'created_by_name': currentUserName,
+      });
+      _showMsg(tr('کار کپی شد.', 'Task duplicated.'));
+    } else if (selected == 'move') {
+      final editableLists =
+          lists.where((l) => _canEditList(l['id'] as String)).toList();
+      if (editableLists.isEmpty || !mounted) return;
+      String targetId = editableLists.first['id'] as String;
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, setD) => AlertDialog(
+            title: Text(tr('انتقال کار به لیست دیگر', 'Move Task')),
+            content: DropdownButtonFormField<String>(
+              value: targetId,
+              items: editableLists
+                  .map((l) => DropdownMenuItem(
+                        value: l['id'] as String,
+                        child: Text(l['title'] as String),
+                      ))
+                  .toList(),
+              onChanged: (v) => setD(() => targetId = v!),
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: Text(tr('انصراف', 'Cancel'))),
+              FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: Text(tr('انتقال', 'Move'))),
+            ],
+          ),
+        ),
+      );
+      if (ok == true) {
+        await supabase
             .from('tasks')
-            .select('id')
-            .eq('list_id', list['id']);
-        for (final t in listTasks) {
-          await deleteStorageFilesForTask(t['id'] as String);
-        }
-
-        await supabase.from('lists').delete().eq('id', list['id']);
-        if (selectedListId == list['id']) {
-          selectedListId = null;
-          selectedTaskId = null;
-        }
-        await _loadInitialData();
-        await _refreshStorageAndCheckReminder();
-      } catch (e) {
-        _showMsg('فقط سازنده لیست می‌تواند آن را حذف کند.');
+            .update({'list_id': targetId}).eq('id', task['id']);
+        _showMsg(tr('کار منتقل شد.', 'Task moved.'));
+      }
+    } else if (selected == 'delete') {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(tr('انتقال به سطل زباله', 'Move to Trash')),
+          content: Text(
+            tr(
+              'این تسک، یادداشت‌ها و فایل‌های آن تا ۳۰ روز در سطل زباله باقی می‌مانند و سپس به‌صورت خودکار پاک می‌شوند. ادامه می‌دهید؟',
+              'Task, notes, and files remain in Trash for 30 days before automatic removal.',
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text(tr('انصراف', 'Cancel'))),
+            FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text(tr('حذف', 'Delete'))),
+          ],
+        ),
+      );
+      if (confirm == true) {
+        await supabase.from('tasks').update({
+          'deleted_at': DateTime.now().toUtc().toIso8601String(),
+          'deleted_by': currentUserId,
+        }).eq('id', task['id']);
+        if (selectedTaskId == task['id']) setState(() => selectedTaskId = null);
       }
     }
   }
@@ -717,32 +1002,45 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _showMembersDialog() async {
     if (selectedListId == null) return;
     final emailCtrl = TextEditingController();
+    String selectedRole = 'member';
 
     await showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) {
-          return AlertDialog(
-            title: const Text('اعضای این لیست و دعوت همکار'),
-            content: SizedBox(
-              width: 380,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
+        builder: (ctx, setD) => AlertDialog(
+          title: Text(tr('اعضای لیست و سطح دسترسی', 'List Members & Roles')),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_canEditList(selectedListId)) ...[
                   Row(
                     children: [
                       Expanded(
                         child: TextField(
                           controller: emailCtrl,
                           textDirection: TextDirection.ltr,
-                          decoration: const InputDecoration(
-                            hintText: 'ایمیل همکار (ثبت‌نام شده)',
-                            border: OutlineInputBorder(),
+                          decoration: InputDecoration(
+                            hintText: tr('ایمیل همکار', 'Employee email'),
+                            border: const OutlineInputBorder(),
                             isDense: true,
                           ),
                         ),
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: 6),
+                      DropdownButton<String>(
+                        value: selectedRole,
+                        items: [
+                          DropdownMenuItem(
+                              value: 'member', child: Text(tr('عضو', 'Member'))),
+                          DropdownMenuItem(
+                              value: 'viewer',
+                              child: Text(tr('ناظر', 'Viewer'))),
+                        ],
+                        onChanged: (v) => setD(() => selectedRole = v!),
+                      ),
+                      const SizedBox(width: 6),
                       FilledButton(
                         onPressed: () async {
                           final mail = emailCtrl.text.trim().toLowerCase();
@@ -754,94 +1052,179 @@ class _HomeScreenState extends State<HomeScreen> {
                                 .ilike('email', mail)
                                 .maybeSingle();
                             if (user == null) {
-                              _showMsg(
-                                'کاربری با این ایمیل هنوز ثبت‌نام نکرده است.',
-                              );
+                              _showMsg(tr('کاربری با این ایمیل ثبت‌نام نکرده است.',
+                                  'User not found.'));
                               return;
                             }
                             await supabase.from('list_members').insert({
                               'list_id': selectedListId,
                               'user_id': user['id'],
-                              'role': 'member',
+                              'role': selectedRole,
                             });
+                            await sendAppNotification(
+                              targetUserId: user['id'] as String,
+                              title: tr('دعوت به لیست جدید', 'Added to a list'),
+                              body: _getHeaderTitle(),
+                              listId: selectedListId,
+                            );
                             emailCtrl.clear();
                             await _loadMembers(selectedListId!);
-                            setDialogState(() {});
-                            _showMsg('همکار با موفقیت به لیست اضافه شد.');
-                          } catch (e) {
-                            _showMsg('این کاربر احتمالاً قبلاً عضو لیست است.');
+                            setD(() {});
+                          } catch (_) {
+                            _showMsg(tr('این کاربر قبلاً عضو لیست است.', 'Already a member.'));
                           }
                         },
-                        child: const Text('افزودن'),
+                        child: Text(tr('افزودن', 'Add')),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  const Divider(),
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 240),
-                    child: ListView.builder(
-                      shrinkWrap: true,
-                      itemCount: currentListMembers.length,
-                      itemBuilder: (_, i) {
-                        final m = currentListMembers[i];
-                        final prof = m['profiles'] as JsonRow?;
-                        final name = prof?['full_name'] ?? 'کاربر';
-                        final email = prof?['email'] ?? '';
-                        final role = m['role'] == 'owner' ? 'مدیر' : 'عضو';
-                        return ListTile(
-                          dense: true,
-                          leading: CircleAvatar(
-                            radius: 16,
-                            child: Text(
-                              name.toString().isNotEmpty
-                                  ? name.toString()[0]
-                                  : '؟',
-                            ),
-                          ),
-                          title: Text('$name ($role)'),
-                          subtitle: Text(email.toString()),
-                          trailing: m['role'] != 'owner'
-                              ? IconButton(
-                                  icon: const Icon(
-                                    Icons.person_remove_outlined,
-                                    color: Colors.red,
-                                    size: 20,
-                                  ),
-                                  onPressed: () async {
-                                    await supabase
-                                        .from('list_members')
-                                        .delete()
-                                        .eq('id', m['id']);
-                                    await _loadMembers(selectedListId!);
-                                    setDialogState(() {});
-                                  },
-                                )
-                              : null,
-                        );
-                      },
-                    ),
-                  ),
+                  const Divider(height: 20),
                 ],
-              ),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 240),
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: currentListMembers.length,
+                    itemBuilder: (_, i) {
+                      final m = currentListMembers[i];
+                      final prof = m['profiles'] as JsonRow?;
+                      final name = prof?['full_name'] ?? 'کاربر';
+                      final email = prof?['email'] ?? '';
+                      final role = m['role'] as String;
+                      final roleFa = role == 'owner'
+                          ? tr('مدیر', 'Owner')
+                          : (role == 'viewer'
+                              ? tr('ناظر (فقط‌خواندنی)', 'Viewer')
+                              : tr('عضو', 'Member'));
+                      return ListTile(
+                        dense: true,
+                        title: Text('$name ($roleFa)'),
+                        subtitle: Text(email.toString()),
+                        trailing: (role != 'owner' &&
+                                _isOwnerOfList(selectedListId!))
+                            ? IconButton(
+                                icon: const Icon(Icons.person_remove_outlined,
+                                    color: Colors.red, size: 20),
+                                onPressed: () async {
+                                  await supabase
+                                      .from('list_members')
+                                      .delete()
+                                      .eq('id', m['id']);
+                                  await _loadMembers(selectedListId!);
+                                  setD(() {});
+                                },
+                              )
+                            : null,
+                      );
+                    },
+                  ),
+                ),
+              ],
             ),
-            actions: [
-              TextButton(
+          ),
+          actions: [
+            TextButton(
                 onPressed: () => Navigator.pop(ctx),
-                child: const Text('بستن'),
-              ),
-            ],
-          );
-        },
+                child: Text(tr('بستن', 'Close'))),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showNotificationsDialog() async {
+    final rows = await supabase
+        .from('notifications')
+        .select()
+        .eq('user_id', currentUserId)
+        .order('created_at', ascending: false)
+        .limit(30);
+    final items = List<JsonRow>.from(rows);
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.notifications_active_outlined),
+            const SizedBox(width: 8),
+            Text(tr('اعلان‌ها و منشن‌ها', 'Notifications')),
+            const Spacer(),
+            TextButton(
+              onPressed: () async {
+                await supabase
+                    .from('notifications')
+                    .update({'is_read': true}).eq('user_id', currentUserId);
+                if (ctx.mounted) Navigator.pop(ctx);
+              },
+              child: Text(tr('خواندن همه', 'Mark all read')),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 400,
+          child: items.isEmpty
+              ? Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(tr('اعلان جدیدی وجود ندارد.', 'No notifications.')),
+                )
+              : ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 340),
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: items.length,
+                    itemBuilder: (_, i) {
+                      final n = items[i];
+                      final unread = n['is_read'] != true;
+                      return ListTile(
+                        dense: true,
+                        leading: Icon(
+                          unread
+                              ? Icons.circle
+                              : Icons.notifications_none_rounded,
+                          size: unread ? 10 : 18,
+                          color: unread ? Colors.red : Colors.grey,
+                        ),
+                        title: Text(
+                          n['title'] as String,
+                          style: TextStyle(
+                            fontWeight:
+                                unread ? FontWeight.bold : FontWeight.normal,
+                          ),
+                        ),
+                        subtitle: Text(
+                          '${n['body'] ?? ''}\n${formatAppDate(n['created_at'] as String?, withTime: true)}',
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                        onTap: () async {
+                          await supabase
+                              .from('notifications')
+                              .update({'is_read': true}).eq('id', n['id']);
+                          if (n['task_id'] != null) {
+                            setState(() =>
+                                selectedTaskId = n['task_id'] as String);
+                          }
+                          if (ctx.mounted) Navigator.pop(ctx);
+                        },
+                      );
+                    },
+                  ),
+                ),
+        ),
+        actions: [
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text(tr('بستن', 'Close'))),
+        ],
       ),
     );
   }
 
   Future<void> _addTask() async {
     final title = quickAddCtrl.text.trim();
-    if (title.isEmpty) return;
-    if (selectedListId == null) {
-      _showMsg('ابتدا یک لیست را انتخاب کنید یا لیست جدید بسازید.');
+    if (title.isEmpty || selectedListId == null) return;
+    if (!_canEditList(selectedListId)) {
+      _showMsg(tr('دسترسی شما در این لیست فقط خواندنی است.', 'View-only access.'));
       return;
     }
     quickAddCtrl.clear();
@@ -850,9 +1233,10 @@ class _HomeScreenState extends State<HomeScreen> {
         'list_id': selectedListId,
         'title': title,
         'created_by': currentUserId,
+        'created_by_name': currentUserName,
       });
     } catch (e) {
-      _showMsg('خطا در ثبت کار: $e');
+      _showMsg('$e');
     }
   }
 
@@ -866,160 +1250,386 @@ class _HomeScreenState extends State<HomeScreen> {
       final found = lists.where((l) => l['id'] == selectedListId);
       if (found.isNotEmpty) return found.first['title'] as String;
     }
-    return smartFilter == 'starred' ? 'کارهای ستاره‌دار' : 'همه کارها';
-  }
-
-  Stream<List<JsonRow>> _tasksStream() {
-    if (selectedListId != null) {
-      return supabase
-          .from('tasks')
-          .stream(primaryKey: ['id'])
-          .eq('list_id', selectedListId!)
-          .order('created_at', ascending: false);
+    switch (smartFilter) {
+      case 'today':
+        return tr('سررسید امروز', 'Due Today');
+      case 'overdue':
+        return tr('تاریخ‌گذشته‌ها', 'Overdue');
+      case 'starred':
+        return tr('کارهای ستاره‌دار', 'Starred');
+      case 'assigned':
+        return tr('واگذارشده به من', 'Assigned to Me');
+      case 'planned':
+        return tr('برنامه‌ریزی‌شده‌ها', 'Planned');
+      default:
+        return tr('همه کارها', 'All Tasks');
     }
-    return supabase
-        .from('tasks')
-        .stream(primaryKey: ['id'])
-        .order('created_at', ascending: false);
   }
 
-  Widget _buildSidebar({bool closeDrawerOnTap = false}) {
-    final myProfile = profilesMap[currentUserId];
-    final myName = myProfile?['full_name'] ?? currentUserEmail;
+  bool _isToday(DateTime dt) {
+    final now = DateTime.now();
+    return dt.year == now.year && dt.month == now.month && dt.day == now.day;
+  }
+
+  bool _isOverdue(DateTime dt) {
+    final now = DateTime.now();
+    final todayStart = DateTime(now.year, now.month, now.day);
+    return dt.isBefore(todayStart);
+  }
+
+  Widget _buildSidebar(
+    List<JsonRow> allActiveTasks,
+    Map<String, List<JsonRow>> subtasksByTask, {
+    bool closeDrawerOnTap = false,
+  }) {
+    final cs = Theme.of(context).colorScheme;
+    final totalAll = allActiveTasks.length;
+    final doneAll = allActiveTasks.where((t) => t['is_completed'] == true).length;
+    final openAll = totalAll - doneAll;
+
+    final openTasks = allActiveTasks.where((t) => t['is_completed'] != true);
+    final starredCount = openTasks.where((t) => t['is_starred'] == true).length;
+    final todayCount = openTasks.where((t) {
+      final d = DateTime.tryParse((t['due_date'] as String?) ?? '')?.toLocal();
+      return d != null && _isToday(d);
+    }).length;
+    final overdueCount = openTasks.where((t) {
+      final d = DateTime.tryParse((t['due_date'] as String?) ?? '')?.toLocal();
+      return d != null && _isOverdue(d);
+    }).length;
+    final plannedCount =
+        openTasks.where((t) => (t['due_date'] as String?) != null).length;
+    final assignedCount = openTasks.where((t) {
+      if (t['assigned_to'] == currentUserId) return true;
+      final subs = subtasksByTask[t['id']] ?? [];
+      return subs.any((s) => s['assigned_to'] == currentUserId);
+    }).length;
+
+    Widget buildListRow(JsonRow list) {
+      final lid = list['id'] as String;
+      final isSel = selectedListId == lid;
+      final openInList =
+          openTasks.where((t) => t['list_id'] == lid).length;
+      final customColorVal = appSettings.listColors[lid];
+      final iconColor = customColorVal != null
+          ? Color(customColorVal)
+          : cs.primary;
+
+      return GestureDetector(
+        onSecondaryTapDown: (d) =>
+            _showListContextMenu(d.globalPosition, list, allActiveTasks),
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          decoration: BoxDecoration(
+            color: isSel ? cs.primaryContainer : Colors.transparent,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: ListTile(
+            dense: true,
+            leading: Icon(Icons.list_alt_rounded, color: iconColor, size: 20),
+            title: Text(
+              list['title'] as String,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: isSel ? cs.onPrimaryContainer : cs.onSurface,
+                fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+              ),
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (openInList > 0)
+                  Text(
+                    toPersianDigits(openInList.toString()),
+                    style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                  ),
+                IconButton(
+                  icon: Icon(Icons.more_vert,
+                      size: 16, color: cs.onSurfaceVariant),
+                  onPressed: () {
+                    final box = context.findRenderObject() as RenderBox?;
+                    final pos = box != null
+                        ? box.localToGlobal(const Offset(120, 260))
+                        : const Offset(120, 260);
+                    _showListContextMenu(pos, list, allActiveTasks);
+                  },
+                ),
+              ],
+            ),
+            onTap: () {
+              _selectList(lid);
+              if (closeDrawerOnTap) Navigator.pop(context);
+            },
+          ),
+        ),
+      );
+    }
+
+    final uncategorizedLists = lists
+        .where((l) => !appSettings.personalFolders
+            .contains(appSettings.listToFolder[l['id']]))
+        .toList();
 
     return Container(
-      color: const Color(0xFF1B2430),
+      color: cs.surface,
       child: SafeArea(
         child: Column(
           children: [
-            Container(
-              padding: const EdgeInsets.all(16),
-              color: const Color(0xFF141B24),
-              child: Row(
+            // هدر پروفایل قابل کلیک برای باز کردن منوی تنظیمات
+            InkWell(
+              onTap: () {
+                showDialog(
+                  context: context,
+                  builder: (_) => UserSettingsDialog(
+                    profilesMap: profilesMap,
+                    onProfileUpdated: _loadInitialData,
+                  ),
+                );
+              },
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                color: cs.primaryContainer.withAlpha(110),
+                child: Row(
+                  children: [
+                    const HaLogoBadge(size: 38),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            currentUserName,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.bold, fontSize: 14),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          Text(
+                            currentUserEmail,
+                            style: TextStyle(
+                                fontSize: 11, color: cs.onSurfaceVariant),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    Icon(Icons.settings_outlined,
+                        size: 20, color: cs.onSurfaceVariant),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            // همه کارها با آمار کامل
+            _smartTile(
+              icon: Icons.inbox_rounded,
+              color: cs.primary,
+              title: tr('همه کارها', 'All Tasks'),
+              selected: selectedListId == null && smartFilter == 'all',
+              subtitleWidget: Row(
                 children: [
-                  CircleAvatar(
-                    backgroundColor: const Color(0xFF1F6FEB),
-                    child: Text(
-                      myName.toString().isNotEmpty ? myName.toString()[0] : 'ک',
-                      style: const TextStyle(color: Colors.white),
-                    ),
+                  Text(
+                    '${tr('کل:', 'All:')} ${toPersianDigits(totalAll.toString())}',
+                    style: TextStyle(fontSize: 10, color: cs.onSurfaceVariant),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          myName.toString(),
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 14,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        Text(
-                          currentUserEmail,
-                          style: const TextStyle(
-                            color: Colors.white60,
-                            fontSize: 11,
-                          ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-                    ),
+                  const SizedBox(width: 6),
+                  const Icon(Icons.check_circle, size: 12, color: Colors.green),
+                  const SizedBox(width: 2),
+                  Text(
+                    toPersianDigits(doneAll.toString()),
+                    style: const TextStyle(fontSize: 10, color: Colors.green),
                   ),
-                  IconButton(
-                    tooltip: 'به‌روزرسانی لیست‌ها',
-                    icon: const Icon(Icons.refresh, color: Colors.white70),
-                    onPressed: () {
-                      _loadInitialData();
-                      _refreshStorageAndCheckReminder();
-                    },
-                  ),
-                  IconButton(
-                    tooltip: 'خروج از حساب',
-                    icon: const Icon(Icons.logout, color: Colors.redAccent),
-                    onPressed: () => supabase.auth.signOut(),
+                  const SizedBox(width: 6),
+                  const Icon(Icons.unpublished_outlined,
+                      size: 12, color: Colors.red),
+                  const SizedBox(width: 2),
+                  Text(
+                    toPersianDigits(openAll.toString()),
+                    style: const TextStyle(fontSize: 10, color: Colors.red),
                   ),
                 ],
               ),
-            ),
-            const SizedBox(height: 8),
-            _sidebarTile(
-              icon: Icons.inbox_rounded,
-              color: Colors.lightBlueAccent,
-              title: 'همه کارها',
-              selected: selectedListId == null && smartFilter == 'all',
               onTap: () {
                 _selectList(null, filter: 'all');
                 if (closeDrawerOnTap) Navigator.pop(context);
               },
             ),
-            _sidebarTile(
+            _smartTile(
               icon: Icons.star_rounded,
-              color: Colors.amber,
-              title: 'ستاره‌دارها',
+              color: Colors.amber.shade700,
+              title: tr('ستاره‌دارها', 'Starred'),
+              count: starredCount,
               selected: selectedListId == null && smartFilter == 'starred',
               onTap: () {
                 _selectList(null, filter: 'starred');
                 if (closeDrawerOnTap) Navigator.pop(context);
               },
             ),
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Divider(color: Colors.white24),
+            _smartTile(
+              icon: Icons.wb_sunny_outlined,
+              color: Colors.orange,
+              title: tr('سررسید امروز', 'Due Today'),
+              count: todayCount,
+              selected: selectedListId == null && smartFilter == 'today',
+              onTap: () {
+                _selectList(null, filter: 'today');
+                if (closeDrawerOnTap) Navigator.pop(context);
+              },
             ),
+            _smartTile(
+              icon: Icons.event_busy_outlined,
+              color: Colors.red,
+              title: tr('تاریخ‌گذشته‌ها', 'Overdue'),
+              count: overdueCount,
+              selected: selectedListId == null && smartFilter == 'overdue',
+              onTap: () {
+                _selectList(null, filter: 'overdue');
+                if (closeDrawerOnTap) Navigator.pop(context);
+              },
+            ),
+            _smartTile(
+              icon: Icons.assignment_ind_outlined,
+              color: Colors.indigo,
+              title: tr('واگذارشده به من', 'Assigned to Me'),
+              count: assignedCount,
+              selected: selectedListId == null && smartFilter == 'assigned',
+              onTap: () {
+                _selectList(null, filter: 'assigned');
+                if (closeDrawerOnTap) Navigator.pop(context);
+              },
+            ),
+            _smartTile(
+              icon: Icons.calendar_month_outlined,
+              color: Colors.teal,
+              title: tr('برنامه‌ریزی‌شده‌ها', 'Planned'),
+              count: plannedCount,
+              selected: selectedListId == null && smartFilter == 'planned',
+              onTap: () {
+                _selectList(null, filter: 'planned');
+                if (closeDrawerOnTap) Navigator.pop(context);
+              },
+            ),
+            const Divider(height: 16),
+            // فولدرهای شخصی و لیست‌ها
             Expanded(
               child: loadingLists
                   ? const Center(child: CircularProgressIndicator())
-                  : lists.isEmpty
-                      ? const Center(
-                          child: Text(
-                            'هنوز لیستی نساخته‌اید',
-                            style: TextStyle(color: Colors.white54),
+                  : ListView(
+                      children: [
+                        ...appSettings.personalFolders.map((folderName) {
+                          final folderLists = lists
+                              .where((l) =>
+                                  appSettings.listToFolder[l['id']] ==
+                                  folderName)
+                              .toList();
+                          return ExpansionTile(
+                            initiallyExpanded: true,
+                            leading: Icon(Icons.folder_outlined,
+                                color: cs.primary, size: 20),
+                            title: Text(folderName,
+                                style: const TextStyle(
+                                    fontSize: 13, fontWeight: FontWeight.bold)),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.delete_outline, size: 16),
+                              onPressed: () =>
+                                  appSettings.removePersonalFolder(folderName),
+                            ),
+                            children: folderLists.map(buildListRow).toList(),
+                          );
+                        }),
+                        ...uncategorizedLists.map(buildListRow),
+                      ],
+                    ),
+            ),
+            // ابزارهای پایین سایدبار
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              child: Wrap(
+                spacing: 4,
+                runSpacing: 4,
+                alignment: WrapAlignment.spaceEvenly,
+                children: [
+                  IconButton(
+                    tooltip: tr('سطل زباله (۳۰ روزه)', 'Trash Bin'),
+                    icon: const Icon(Icons.delete_outline_rounded),
+                    onPressed: () {
+                      showDialog(
+                        context: context,
+                        builder: (_) =>
+                            TrashBinDialog(onRestored: _loadInitialData),
+                      );
+                    },
+                  ),
+                  IconButton(
+                    tooltip: tr('ساخت فولدر شخصی', 'New Personal Folder'),
+                    icon: const Icon(Icons.create_new_folder_outlined),
+                    onPressed: () async {
+                      final c = TextEditingController();
+                      final name = await showDialog<String>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          title: Text(tr('فولدر شخصی جدید', 'New Personal Folder')),
+                          content: TextField(
+                            controller: c,
+                            autofocus: true,
+                            onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+                            decoration: InputDecoration(
+                              hintText: tr('نام فولدر...', 'Folder name...'),
+                              border: const OutlineInputBorder(),
+                            ),
                           ),
-                        )
-                      : ListView.builder(
-                          itemCount: lists.length,
-                          itemBuilder: (_, i) {
-                            final list = lists[i];
-                            final isSelected = selectedListId == list['id'];
-                            final isOwner = list['owner_id'] == currentUserId;
-                            return _sidebarTile(
-                              icon: Icons.list_alt_rounded,
-                              color: Colors.tealAccent,
-                              title: list['title'] as String,
-                              selected: isSelected,
-                              trailing: isOwner
-                                  ? IconButton(
-                                      icon: const Icon(
-                                        Icons.delete_outline,
-                                        color: Colors.white38,
-                                        size: 18,
-                                      ),
-                                      onPressed: () => _deleteList(list),
-                                    )
-                                  : null,
-                              onTap: () {
-                                _selectList(list['id'] as String);
-                                if (closeDrawerOnTap) Navigator.pop(context);
-                              },
-                            );
-                          },
+                          actions: [
+                            TextButton(
+                                onPressed: () => Navigator.pop(ctx),
+                                child: Text(tr('انصراف', 'Cancel'))),
+                            FilledButton(
+                                onPressed: () =>
+                                    Navigator.pop(ctx, c.text.trim()),
+                                child: Text(tr('ساخت', 'Create'))),
+                          ],
                         ),
+                      );
+                      if (name != null && name.isNotEmpty) {
+                        await appSettings.addPersonalFolder(name);
+                      }
+                    },
+                  ),
+                  IconButton(
+                    tooltip: tr('ورود از Microsoft To Do', 'Import To Do'),
+                    icon: const Icon(Icons.download_for_offline_outlined),
+                    onPressed: () {
+                      showDialog(
+                        context: context,
+                        builder: (_) => TodoImportDialog(
+                          currentUserEmail: currentUserEmail,
+                          currentUserName: currentUserName,
+                          onImported: _loadInitialData,
+                        ),
+                      );
+                    },
+                  ),
+                  IconButton(
+                    tooltip: tr('بازیابی از فایل بکاپ', 'Restore Backup'),
+                    icon: const Icon(Icons.restore_page_outlined),
+                    onPressed: () =>
+                        showBackupRestoreDialog(context, _loadInitialData),
+                  ),
+                  IconButton(
+                    tooltip: tr('خروج از حساب', 'Sign Out'),
+                    icon: const Icon(Icons.logout, color: Colors.redAccent),
+                    onPressed: () => supabase.auth.signOut(),
+                  ),
+                ],
+              ),
             ),
             Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
               child: SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
-                  style: FilledButton.styleFrom(
-                    backgroundColor: const Color(0xFF1F6FEB),
-                  ),
                   onPressed: _createListDialog,
                   icon: const Icon(Icons.add),
-                  label: const Text('ساخت لیست جدید'),
+                  label: Text(tr('ساخت لیست جدید', 'New List')),
                 ),
               ),
             ),
@@ -1029,984 +1639,674 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _sidebarTile({
+  Widget _smartTile({
     required IconData icon,
     required Color color,
     required String title,
     required bool selected,
     required VoidCallback onTap,
-    Widget? trailing,
+    int? count,
+    Widget? subtitleWidget,
   }) {
+    final cs = Theme.of(context).colorScheme;
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
       decoration: BoxDecoration(
-        color: selected ? Colors.white.withAlpha(30) : Colors.transparent,
+        color: selected ? cs.primaryContainer : Colors.transparent,
         borderRadius: BorderRadius.circular(10),
       ),
       child: ListTile(
         dense: true,
-        leading: Icon(icon, color: color, size: 22),
+        leading: Icon(icon, color: color, size: 20),
         title: Text(
           title,
           style: TextStyle(
-            color: selected ? Colors.white : Colors.white70,
+            fontSize: 13,
+            color: selected ? cs.onPrimaryContainer : cs.onSurface,
             fontWeight: selected ? FontWeight.bold : FontWeight.normal,
           ),
         ),
-        trailing: trailing,
+        subtitle: subtitleWidget,
+        trailing: (count != null && count > 0)
+            ? Text(
+                toPersianDigits(count.toString()),
+                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+              )
+            : null,
         onTap: onTap,
       ),
     );
   }
 
-  Widget _buildTasksPane(bool isDesktop) {
+  Widget _buildTasksPane(
+    bool isDesktop,
+    List<JsonRow> allActiveTasks,
+    Map<String, List<JsonRow>> subtasksByTask,
+    List<String> allTags,
+  ) {
+    final cs = Theme.of(context).colorScheme;
     final remaining = (storageQuotaBytes - totalStorageUsedBytes)
         .clamp(0, storageQuotaBytes);
+    final listTitleMap = {
+      for (final l in lists) l['id'] as String: l['title'] as String
+    };
+
+    var filtered = allActiveTasks.where((t) {
+      if (selectedListId != null) return t['list_id'] == selectedListId;
+      if (smartFilter == 'starred') {
+        if (t['is_starred'] != true) return false;
+        if (starredListFilterId != null &&
+            t['list_id'] != starredListFilterId) {
+          return false;
+        }
+        return true;
+      }
+      if (smartFilter == 'today') {
+        final d = DateTime.tryParse((t['due_date'] as String?) ?? '')?.toLocal();
+        return d != null && _isToday(d);
+      }
+      if (smartFilter == 'overdue') {
+        final d = DateTime.tryParse((t['due_date'] as String?) ?? '')?.toLocal();
+        return t['is_completed'] != true && d != null && _isOverdue(d);
+      }
+      if (smartFilter == 'assigned') {
+        if (t['assigned_to'] == currentUserId) return true;
+        final subs = subtasksByTask[t['id']] ?? [];
+        return subs.any((s) => s['assigned_to'] == currentUserId);
+      }
+      if (smartFilter == 'planned') {
+        return (t['due_date'] as String?) != null;
+      }
+      return true;
+    }).toList();
+
+    if (searchQuery.trim().isNotEmpty) {
+      final q = searchQuery.trim().toLowerCase();
+      filtered = filtered.where((t) {
+        final title = (t['title'] ?? '').toString().toLowerCase();
+        final notes = (t['notes'] ?? '').toString().toLowerCase();
+        final tags = ((t['tags'] as List?) ?? []).join(' ').toLowerCase();
+        return title.contains(q) || notes.contains(q) || tags.contains(q);
+      }).toList();
+    }
+
+    int prioWeight(String? p) => p == 'urgent' ? 0 : (p == 'medium' ? 1 : 2);
+    filtered.sort((a, b) {
+      if (sortBy == 'due') {
+        final da = (a['due_date'] as String?) ?? '9999';
+        final db = (b['due_date'] as String?) ?? '9999';
+        return da.compareTo(db);
+      }
+      if (sortBy == 'priority') {
+        return prioWeight(a['priority'] as String?)
+            .compareTo(prioWeight(b['priority'] as String?));
+      }
+      if (sortBy == 'starred') {
+        final sa = a['is_starred'] == true ? 0 : 1;
+        final sb = b['is_starred'] == true ? 0 : 1;
+        return sa.compareTo(sb);
+      }
+      return ((b['created_at'] as String?) ?? '')
+          .compareTo((a['created_at'] as String?) ?? '');
+    });
+
+    final activeTasks =
+        filtered.where((t) => t['is_completed'] != true).toList();
+    final doneTasks = filtered.where((t) => t['is_completed'] == true).toList();
 
     return Container(
-      color: const Color(0xFFE9EEF5),
+      color: cs.surfaceContainerLow,
       child: Column(
         children: [
           if (isStorageLow)
             Container(
               width: double.infinity,
               color: Colors.red.shade700,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Row(
                 children: [
                   const Icon(Icons.warning_amber_rounded, color: Colors.white),
-                  const SizedBox(width: 10),
+                  const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      'هشدار کمبود فضا! فقط ${formatBytes(remaining)} از فضای فایل‌ها باقی مانده است.',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 13,
+                      tr(
+                        'هشدار کمبود فضا: فقط ${formatBytes(remaining)} باقی مانده است. از کلیک راست روی لیست‌ها، فایل‌های کارهای تیک‌خورده را پاکسازی کنید.',
+                        'Low storage: ${formatBytes(remaining)} left.',
                       ),
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
                     ),
-                  ),
-                  TextButton(
-                    style: TextButton.styleFrom(
-                      backgroundColor: Colors.white,
-                      foregroundColor: Colors.red.shade800,
-                    ),
-                    onPressed: () async {
-                      final files = await _fetchCompletedTaskAttachments();
-                      if (mounted) await _openCleanupDialog(files);
-                    },
-                    child: const Text('پاکسازی'),
                   ),
                 ],
               ),
             ),
-          if (selectedListId != null)
+          if (selectedListId == null && smartFilter == 'starred')
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: Row(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(left: 6),
+                    child: FilterChip(
+                      label: Text(tr('همه لیست‌ها', 'All Lists')),
+                      selected: starredListFilterId == null,
+                      onSelected: (_) =>
+                          setState(() => starredListFilterId = null),
+                    ),
+                  ),
+                  ...lists.map((l) => Padding(
+                        padding: const EdgeInsets.only(left: 6),
+                        child: FilterChip(
+                          label: Text(l['title'] as String),
+                          selected: starredListFilterId == l['id'],
+                          onSelected: (_) => setState(() =>
+                              starredListFilterId = l['id'] as String),
+                        ),
+                      )),
+                ],
+              ),
+            ),
+          if (selectedListId != null && _canEditList(selectedListId))
             Container(
-              margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              margin: const EdgeInsets.fromLTRB(16, 14, 16, 6),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: cs.surface,
                 borderRadius: BorderRadius.circular(12),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withAlpha(15),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
+                border: Border.all(color: cs.outlineVariant),
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.add, color: Color(0xFF1F6FEB)),
+                  Icon(Icons.add, color: cs.primary),
                   const SizedBox(width: 10),
                   Expanded(
                     child: TextField(
                       controller: quickAddCtrl,
                       onSubmitted: (_) => _addTask(),
-                      decoration: const InputDecoration(
-                        hintText: 'افزودن کار جدید و فشردن Enter...',
+                      decoration: InputDecoration(
+                        hintText: tr('افزودن کار جدید و فشردن Enter...', 'Add a task + Enter...'),
                         border: InputBorder.none,
                       ),
                     ),
                   ),
                   FilledButton(
                     onPressed: _addTask,
-                    child: const Text('ثبت'),
+                    child: Text(tr('ثبت', 'Add')),
                   ),
                 ],
               ),
             ),
           Expanded(
-            child: StreamBuilder<List<JsonRow>>(
-              stream: _tasksStream(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting &&
-                    !snapshot.hasData) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                var allTasks = snapshot.data ?? [];
-                if (selectedListId == null && smartFilter == 'starred') {
-                  allTasks = allTasks
-                      .where((t) => t['is_starred'] == true)
-                      .toList();
-                }
-
-                if (allTasks.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.task_alt_rounded,
-                          size: 64,
-                          color: Colors.grey.withAlpha(120),
-                        ),
-                        const SizedBox(height: 12),
-                        const Text(
-                          'هیچ کاری در این بخش ثبت نشده است.',
-                          style: TextStyle(color: Colors.black54),
-                        ),
-                      ],
+            child: filtered.isEmpty
+                ? Center(
+                    child: Text(
+                      tr('هیچ کاری در این بخش وجود ندارد.', 'No tasks here.'),
+                      style: TextStyle(color: cs.onSurfaceVariant),
                     ),
-                  );
-                }
-
-                final activeTasks =
-                    allTasks.where((t) => t['is_completed'] != true).toList();
-                final doneTasks =
-                    allTasks.where((t) => t['is_completed'] == true).toList();
-
-                return ListView(
-                  padding: const EdgeInsets.all(16),
-                  children: [
-                    ...activeTasks.map((t) => _taskCard(t, isDesktop)),
-                    if (doneTasks.isNotEmpty) ...[
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        child: Text(
-                          'انجام‌شده‌ها (${toPersianDigits(doneTasks.length.toString())})',
-                          style: const TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Colors.black54,
+                  )
+                : ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: [
+                      ...activeTasks.map((t) => _taskCard(
+                            t,
+                            isDesktop,
+                            subtasksByTask[t['id']] ?? [],
+                            listTitleMap,
+                            allTags,
+                          )),
+                      if (doneTasks.isNotEmpty) ...[
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          child: Text(
+                            '${tr('انجام‌شده‌ها', 'Completed')} (${toPersianDigits(doneTasks.length.toString())})',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: cs.onSurfaceVariant,
+                            ),
                           ),
                         ),
-                      ),
-                      ...doneTasks.map((t) => _taskCard(t, isDesktop)),
+                        ...doneTasks.map((t) => _taskCard(
+                              t,
+                              isDesktop,
+                              subtasksByTask[t['id']] ?? [],
+                              listTitleMap,
+                              allTags,
+                            )),
+                      ],
                     ],
-                  ],
-                );
-              },
-            ),
+                  ),
           ),
         ],
       ),
     );
   }
 
-  Widget _taskCard(JsonRow task, bool isDesktop) {
+  Widget _taskCard(
+    JsonRow task,
+    bool isDesktop,
+    List<JsonRow> subs,
+    Map<String, String> listTitleMap,
+    List<String> allTags,
+  ) {
+    final cs = Theme.of(context).colorScheme;
     final isDone = task['is_completed'] == true;
     final isStarred = task['is_starred'] == true;
     final isSelected = isDesktop && selectedTaskId == task['id'];
-    final assigneeId = task['assigned_to'] as String?;
-    final assigneeName = assigneeId != null
-        ? (profilesMap[assigneeId]?['full_name'] ?? '')
-        : '';
-    final dueDate = formatShamsi(task['due_date'] as String?);
+    final canEdit = _canEditList(task['list_id'] as String?);
+    final dueDate = formatAppDate(task['due_date'] as String?);
+    final prio = (task['priority'] as String?) ?? 'normal';
+    final tags = List<String>.from((task['tags'] as List?) ?? []);
 
-    return Card(
-      elevation: isSelected ? 3 : 0.8,
-      color: isSelected
-          ? const Color(0xFFE3F2FD)
-          : (isDone ? Colors.white.withAlpha(180) : Colors.white),
-      margin: const EdgeInsets.only(bottom: 8),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(10),
-        side: isSelected
-            ? const BorderSide(color: Color(0xFF1F6FEB), width: 1.5)
-            : BorderSide.none,
-      ),
-      child: ListTile(
-        leading: Checkbox(
-          value: isDone,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-          onChanged: (val) async {
-            await supabase
-                .from('tasks')
-                .update({'is_completed': val ?? false}).eq('id', task['id']);
-          },
-        ),
-        title: Text(
-          task['title'] as String,
-          style: TextStyle(
-            decoration: isDone ? TextDecoration.lineThrough : null,
-            color: isDone ? Colors.black45 : Colors.black87,
-            fontWeight: FontWeight.w500,
-          ),
-        ),
-        subtitle: (assigneeName.isNotEmpty || dueDate.isNotEmpty)
-            ? Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Wrap(
-                  spacing: 12,
-                  children: [
-                    if (dueDate.isNotEmpty)
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(
-                            Icons.calendar_today,
-                            size: 13,
-                            color: Colors.blueGrey,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            dueDate,
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                        ],
-                      ),
-                    if (assigneeName.isNotEmpty)
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(
-                            Icons.person,
-                            size: 14,
-                            color: Colors.indigo,
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            assigneeName.toString(),
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                        ],
-                      ),
-                  ],
-                ),
-              )
-            : null,
-        trailing: IconButton(
-          icon: Icon(
-            isStarred ? Icons.star_rounded : Icons.star_border_rounded,
-            color: isStarred ? Colors.amber.shade700 : Colors.grey,
-          ),
-          onPressed: () async {
-            await supabase
-                .from('tasks')
-                .update({'is_starred': !isStarred}).eq('id', task['id']);
-          },
-        ),
-        onTap: () {
-          if (isDesktop) {
-            setState(() => selectedTaskId = task['id'] as String);
-          } else {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => Scaffold(
-                  appBar: AppBar(title: const Text('جزئیات کار و گفت‌وگو')),
-                  body: TaskDetailPanel(
-                    taskId: task['id'] as String,
-                    profilesMap: profilesMap,
-                    onStorageChanged: _refreshStorageAndCheckReminder,
-                    onDeleted: () {
-                      _refreshStorageAndCheckReminder();
-                      Navigator.pop(context);
-                    },
-                  ),
-                ),
-              ),
-            );
-          }
-        },
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isDesktop = MediaQuery.of(context).size.width >= 900;
-
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF1F6FEB),
-        foregroundColor: Colors.white,
-        title: Text(_getHeaderTitle()),
-        actions: [
-          IconButton(
-            tooltip: 'مدیریت فضا و پاکسازی فایل‌های کارهای تیک‌خورده',
-            icon: Icon(
-              Icons.cleaning_services_outlined,
-              color: isStorageLow ? Colors.amberAccent : Colors.white,
-            ),
-            onPressed: () async {
-              await _refreshStorageAndCheckReminder();
-              final files = await _fetchCompletedTaskAttachments();
-              if (mounted) await _openCleanupDialog(files);
-            },
-          ),
-          if (selectedListId != null)
-            TextButton.icon(
-              style: TextButton.styleFrom(foregroundColor: Colors.white),
-              onPressed: _showMembersDialog,
-              icon: const Icon(Icons.group_add_outlined),
-              label: Text(
-                isDesktop
-                    ? 'اعضا (${toPersianDigits(currentListMembers.length.toString())})'
-                    : toPersianDigits(currentListMembers.length.toString()),
-              ),
-            ),
-          const SizedBox(width: 8),
-        ],
-      ),
-      drawer: isDesktop
-          ? null
-          : Drawer(child: _buildSidebar(closeDrawerOnTap: true)),
-      body: isDesktop
-          ? Row(
-              children: [
-                SizedBox(width: 270, child: _buildSidebar()),
-                Expanded(flex: 3, child: _buildTasksPane(true)),
-                if (selectedTaskId != null)
-                  Container(
-                    width: 400,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      border: Border(
-                        right: BorderSide(color: Colors.grey.shade300),
-                      ),
-                    ),
-                    child: TaskDetailPanel(
-                      key: ValueKey(selectedTaskId),
-                      taskId: selectedTaskId!,
-                      profilesMap: profilesMap,
-                      onStorageChanged: _refreshStorageAndCheckReminder,
-                      onClose: () => setState(() => selectedTaskId = null),
-                      onDeleted: () {
-                        _refreshStorageAndCheckReminder();
-                        setState(() => selectedTaskId = null);
-                      },
-                    ),
-                  ),
-              ],
-            )
-          : _buildTasksPane(false),
-    );
-  }
-}
-
-class TaskDetailPanel extends StatefulWidget {
-  final String taskId;
-  final Map<String, JsonRow> profilesMap;
-  final VoidCallback? onClose;
-  final VoidCallback? onDeleted;
-  final Future<void> Function()? onStorageChanged;
-
-  const TaskDetailPanel({
-    super.key,
-    required this.taskId,
-    required this.profilesMap,
-    this.onClose,
-    this.onDeleted,
-    this.onStorageChanged,
-  });
-
-  @override
-  State<TaskDetailPanel> createState() => _TaskDetailPanelState();
-}
-
-class _TaskDetailPanelState extends State<TaskDetailPanel> {
-  final subtaskCtrl = TextEditingController();
-  final commentCtrl = TextEditingController();
-  final notesCtrl = TextEditingController();
-  bool notesInitialized = false;
-  bool uploadingFile = false;
-  List<JsonRow> listMembers = [];
-  String? loadedListId;
-
-  @override
-  void dispose() {
-    subtaskCtrl.dispose();
-    commentCtrl.dispose();
-    notesCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _fetchMembersForTask(String listId) async {
-    if (loadedListId == listId) return;
-    loadedListId = listId;
-    try {
-      final data = await supabase
-          .from('list_members')
-          .select('user_id, profiles(id, full_name, email)')
-          .eq('list_id', listId);
-      if (mounted) {
-        setState(() {
-          listMembers = List<JsonRow>.from(data);
-        });
+    // منطق نمایش مسئولین: اگر زیروظایف به چند نفر اساین شده باشند همه با ویرگول نمایش داده می‌شوند
+    final assigneeNames = <String>{};
+    for (final s in subs) {
+      final uid = s['assigned_to'] as String?;
+      if (uid != null && profilesMap[uid] != null) {
+        assigneeNames.add((profilesMap[uid]!['full_name'] ?? '').toString());
       }
-    } catch (_) {}
-  }
-
-  Future<void> _pickDueDate(JsonRow task) async {
-    final initial = DateTime.tryParse(task['due_date'] ?? '') ?? DateTime.now();
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: initial,
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2035),
-    );
-    if (picked != null) {
-      await supabase
-          .from('tasks')
-          .update({'due_date': picked.toIso8601String()}).eq('id', task['id']);
     }
-  }
-
-  Future<void> _deleteTaskAndFiles() async {
-    await deleteStorageFilesForTask(widget.taskId);
-    await supabase.from('tasks').delete().eq('id', widget.taskId);
-    widget.onDeleted?.call();
-  }
-
-  Future<void> _uploadAttachment() async {
-    try {
-      final file = await FilePicker.pickFile(type: FileType.any);
-      if (file == null) return;
-
-      final Uint8List? bytes = await file.readAsBytes();
-      if (bytes == null) {
-        _showMsg('امکان خواندن فایل انتخاب‌شده وجود ندارد.');
-        return;
+    if (assigneeNames.isEmpty && task['assigned_to'] != null) {
+      final uid = task['assigned_to'] as String;
+      if (profilesMap[uid] != null) {
+        assigneeNames.add((profilesMap[uid]!['full_name'] ?? '').toString());
       }
+    }
+    final assigneesLabel =
+        assigneeNames.where((e) => e.isNotEmpty).join('، ');
 
-      setState(() => uploadingFile = true);
-      final safePath = buildSafeStoragePath(widget.taskId, file.name);
+    // محاسبه درصد پیشرفت زیروظایف
+    final doneSubs = subs.where((s) => s['is_completed'] == true).length;
+    final progress = subs.isEmpty ? 0.0 : (doneSubs / subs.length);
+    final listName = listTitleMap[task['list_id']] ?? '';
 
-      await supabase.storage.from('task-files').uploadBinary(safePath, bytes);
-      await supabase.from('task_attachments').insert({
-        'task_id': widget.taskId,
-        'file_name': file.name,
-        'file_path': safePath,
-        'file_size': bytes.length,
-        'uploaded_by': supabase.auth.currentUser?.id,
-      });
+    Color prioColor = Colors.transparent;
+    if (prio == 'urgent') prioColor = Colors.red;
+    if (prio == 'medium') prioColor = Colors.orange;
 
-      await widget.onStorageChanged?.call();
-
-      // بررسی حجم باقی‌مانده: اگر ۱۰۰ مگابایت یا کمتر مانده باشد، برای همین فایل هشدار می‌دهد
-      final totalUsed = await fetchTotalStorageBytes();
-      final remaining =
-          (storageQuotaBytes - totalUsed).clamp(0, storageQuotaBytes);
-      if (remaining <= lowStorageThresholdBytes && mounted) {
-        await showDialog(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Row(
-              children: [
-                Icon(Icons.warning_amber_rounded, color: Colors.red),
-                SizedBox(width: 8),
-                Text('هشدار پر شدن فضای سرور'),
-              ],
-            ),
-            content: Text(
-              'فایل «${file.name}» آپلود شد، اما فضای ذخیره‌سازی شرکت در حال پر شدن است!\n\n'
-              'حجم باقی‌مانده: فقط ${formatBytes(remaining)}\n'
-              'لطفاً فایل‌های اضافی در کارهای تیک‌خورده را پاک کنید تا این هشدار غیرفعال شود.',
-            ),
-            actions: [
-              FilledButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('متوجه شدم'),
+    return GestureDetector(
+      onSecondaryTapDown: (d) => _showTaskContextMenu(d.globalPosition, task),
+      child: Card(
+        elevation: isSelected ? 3 : 0.8,
+        color: isSelected
+            ? cs.primaryContainer.withAlpha(130)
+            : (isDone ? cs.surface.withAlpha(170) : cs.surface),
+        margin: const EdgeInsets.only(bottom: 8),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+          side: isSelected
+              ? BorderSide(color: cs.primary, width: 1.5)
+              : (prioColor != Colors.transparent
+                  ? BorderSide(color: prioColor.withAlpha(160), width: 1.2)
+                  : BorderSide.none),
+        ),
+        child: ListTile(
+          leading: Checkbox(
+            value: isDone,
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+            onChanged: canEdit
+                ? (val) async {
+                    final checked = val ?? false;
+                    if (!checked) {
+                      final ok = await showDialog<bool>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          title: Text(tr('بازگشایی کار', 'Reopen Task')),
+                          content: Text(
+                            tr(
+                              'موارد قبلی این کار قفل می‌مانند و فقط امکان ثبت به‌روزرسانی جدید وجود دارد. ادامه می‌دهید؟',
+                              'Previous items stay locked; only new updates allowed.',
+                            ),
+                          ),
+                          actions: [
+                            TextButton(
+                                onPressed: () => Navigator.pop(ctx, false),
+                                child: Text(tr('انصراف', 'Cancel'))),
+                            FilledButton(
+                                onPressed: () => Navigator.pop(ctx, true),
+                                child: Text(tr('بازگشایی', 'Reopen'))),
+                          ],
+                        ),
+                      );
+                      if (ok != true) return;
+                      await supabase.from('tasks').update({
+                        'is_completed': false,
+                        'reopened_at': DateTime.now().toUtc().toIso8601String(),
+                      }).eq('id', task['id']);
+                    } else {
+                      await playTickSound();
+                      await supabase.from('tasks').update({
+                        'is_completed': true,
+                        'completed_at':
+                            DateTime.now().toUtc().toIso8601String(),
+                        'completed_by': currentUserId,
+                        'completed_by_name': currentUserName,
+                      }).eq('id', task['id']);
+                      await supabase
+                          .from('subtasks')
+                          .update({'is_locked': true}).eq('task_id', task['id']);
+                      await supabase
+                          .from('comments')
+                          .update({'is_locked': true}).eq('task_id', task['id']);
+                      await supabase
+                          .from('note_history')
+                          .update({'is_locked': true}).eq('task_id', task['id']);
+                    }
+                  }
+                : null,
+          ),
+          title: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  task['title'] as String,
+                  style: TextStyle(
+                    decoration: isDone ? TextDecoration.lineThrough : null,
+                    color: isDone ? cs.onSurfaceVariant : cs.onSurface,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
               ),
+              if (selectedListId == null && listName.isNotEmpty)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: cs.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    listName,
+                    style: TextStyle(fontSize: 10, color: cs.onSurfaceVariant),
+                  ),
+                ),
             ],
           ),
-        );
-      } else {
-        _showMsg('فایل «${file.name}» با موفقیت آپلود شد.');
-      }
-    } catch (e) {
-      _showMsg('خطا در آپلود فایل: $e');
-    } finally {
-      if (mounted) setState(() => uploadingFile = false);
-    }
-  }
-
-  Future<void> _openAttachment(JsonRow attachment) async {
-    try {
-      final signedUrl = await supabase.storage
-          .from('task-files')
-          .createSignedUrl(attachment['file_path'] as String, 3600);
-      final uri = Uri.parse(signedUrl);
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } catch (e) {
-      _showMsg('خطا در باز کردن فایل: $e');
-    }
-  }
-
-  Future<void> _deleteAttachment(JsonRow attachment) async {
-    try {
-      await supabase.storage
-          .from('task-files')
-          .remove([attachment['file_path'] as String]);
-      await supabase
-          .from('task_attachments')
-          .delete()
-          .eq('id', attachment['id']);
-      await widget.onStorageChanged?.call();
-      _showMsg('فایل حذف شد و فضای آن آزاد گردید.');
-    } catch (e) {
-      _showMsg('خطا در حذف فایل: $e');
-    }
-  }
-
-  Future<void> _addSubtask() async {
-    final text = subtaskCtrl.text.trim();
-    if (text.isEmpty) return;
-    subtaskCtrl.clear();
-    await supabase.from('subtasks').insert({
-      'task_id': widget.taskId,
-      'title': text,
-    });
-  }
-
-  Future<void> _addComment() async {
-    final text = commentCtrl.text.trim();
-    if (text.isEmpty) return;
-    commentCtrl.clear();
-    await supabase.from('comments').insert({
-      'task_id': widget.taskId,
-      'user_id': supabase.auth.currentUser!.id,
-      'content': text,
-    });
-  }
-
-  void _showMsg(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (subs.isNotEmpty) ...[
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Expanded(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: progress,
+                          minHeight: 6,
+                          backgroundColor: cs.surfaceContainerHighest,
+                          valueColor: const AlwaysStoppedAnimation(
+                              Color(0xFF16A34A)),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '${toPersianDigits((progress * 100).round().toString())}٪',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF16A34A),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+              if (assigneesLabel.isNotEmpty ||
+                  dueDate.isNotEmpty ||
+                  tags.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 5),
+                  child: Wrap(
+                    spacing: 10,
+                    runSpacing: 4,
+                    children: [
+                      if (dueDate.isNotEmpty)
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.calendar_today,
+                                size: 12, color: cs.onSurfaceVariant),
+                            const SizedBox(width: 3),
+                            Text(dueDate, style: const TextStyle(fontSize: 11)),
+                          ],
+                        ),
+                      if (assigneesLabel.isNotEmpty)
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.group_outlined,
+                                size: 13, color: cs.primary),
+                            const SizedBox(width: 3),
+                            Text(assigneesLabel,
+                                style: const TextStyle(fontSize: 11)),
+                          ],
+                        ),
+                      ...tags.map((tg) => Text(
+                            '#$tg',
+                            style: TextStyle(
+                                fontSize: 11,
+                                color: cs.primary,
+                                fontWeight: FontWeight.w500),
+                          )),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+          trailing: IconButton(
+            icon: Icon(
+              isStarred ? Icons.star_rounded : Icons.star_border_rounded,
+              color: isStarred ? Colors.amber.shade700 : Colors.grey,
+            ),
+            onPressed: canEdit
+                ? () async {
+                    await supabase
+                        .from('tasks')
+                        .update({'is_starred': !isStarred}).eq('id', task['id']);
+                  }
+                : null,
+          ),
+          onTap: () {
+            if (isDesktop) {
+              setState(() => selectedTaskId = task['id'] as String);
+            } else {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => Scaffold(
+                    appBar: AppBar(title: Text(tr('جزئیات کار', 'Task Details'))),
+                    body: TaskDetailPanel(
+                      taskId: task['id'] as String,
+                      profilesMap: profilesMap,
+                      existingTags: allTags,
+                      canEdit: canEdit,
+                      onStorageChanged: _refreshStorage,
+                      onDeleted: () => Navigator.pop(context),
+                    ),
+                  ),
+                ),
+              );
+            }
+          },
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final isDesktop = MediaQuery.of(context).size.width >= 920;
+    final cs = Theme.of(context).colorScheme;
+
     return StreamBuilder<List<JsonRow>>(
       stream: supabase
           .from('tasks')
           .stream(primaryKey: ['id'])
-          .eq('id', widget.taskId),
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (snapshot.data!.isEmpty) {
-          return const Center(child: Text('این کار حذف شده است.'));
-        }
-        final task = snapshot.data!.first;
-        _fetchMembersForTask(task['list_id'] as String);
+          .order('created_at', ascending: false),
+      builder: (context, taskSnap) {
+        final allActiveTasks = (taskSnap.data ?? [])
+            .where((t) => t['deleted_at'] == null)
+            .toList();
+        final allTags = allActiveTasks
+            .expand((t) => List<String>.from((t['tags'] as List?) ?? []))
+            .toSet()
+            .toList();
 
-        if (!notesInitialized) {
-          notesCtrl.text = (task['notes'] as String?) ?? '';
-          notesInitialized = true;
-        }
+        return StreamBuilder<List<JsonRow>>(
+          stream: supabase.from('subtasks').stream(primaryKey: ['id']),
+          builder: (context, subSnap) {
+            final subtasksByTask = <String, List<JsonRow>>{};
+            for (final s in (subSnap.data ?? [])) {
+              final tid = s['task_id'] as String;
+              subtasksByTask.putIfAbsent(tid, () => []).add(s);
+            }
 
-        final dueStr = formatShamsi(task['due_date'] as String?);
-        final currentAssignee = task['assigned_to'] as String?;
+            final selectedTaskListId = selectedTaskId != null
+                ? allActiveTasks
+                    .where((t) => t['id'] == selectedTaskId)
+                    .map((t) => t['list_id'] as String?)
+                    .firstOrNull
+                : null;
 
-        return Column(
-          children: [
-            if (widget.onClose != null)
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                color: Colors.grey.shade100,
-                child: Row(
-                  children: [
-                    const Text(
-                      'جزئیات کار',
-                      style: TextStyle(fontWeight: FontWeight.bold),
+            return Scaffold(
+              appBar: AppBar(
+                title: showSearch
+                    ? TextField(
+                        controller: searchCtrl,
+                        autofocus: true,
+                        style: TextStyle(color: cs.onPrimary),
+                        decoration: InputDecoration(
+                          hintText: tr('جستجو در کارها، یادداشت‌ها و تگ‌ها...', 'Search...'),
+                          hintStyle:
+                              TextStyle(color: cs.onPrimary.withAlpha(180)),
+                          border: InputBorder.none,
+                        ),
+                        onChanged: (v) => setState(() => searchQuery = v),
+                      )
+                    : Text(_getHeaderTitle()),
+                actions: [
+                  IconButton(
+                    tooltip: tr('جستجو', 'Search'),
+                    icon: Icon(showSearch ? Icons.close : Icons.search_rounded),
+                    onPressed: () {
+                      setState(() {
+                        showSearch = !showSearch;
+                        if (!showSearch) {
+                          searchCtrl.clear();
+                          searchQuery = '';
+                        }
+                      });
+                    },
+                  ),
+                  PopupMenuButton<String>(
+                    tooltip: tr('مرتب‌سازی', 'Sort'),
+                    icon: const Icon(Icons.sort_rounded),
+                    onSelected: (v) => setState(() => sortBy = v),
+                    itemBuilder: (_) => [
+                      PopupMenuItem(
+                          value: 'created', child: Text(tr('جدیدترین‌ها', 'Newest'))),
+                      PopupMenuItem(
+                          value: 'due', child: Text(tr('تاریخ سررسید', 'Due Date'))),
+                      PopupMenuItem(
+                          value: 'priority', child: Text(tr('اولویت', 'Priority'))),
+                      PopupMenuItem(
+                          value: 'starred', child: Text(tr('ستاره‌دارها', 'Starred'))),
+                    ],
+                  ),
+                  // زنگوله اعلان‌ها با شمارنده خوانده‌نشده
+                  StreamBuilder<List<JsonRow>>(
+                    stream: supabase
+                        .from('notifications')
+                        .stream(primaryKey: ['id'])
+                        .eq('user_id', currentUserId),
+                    builder: (ctx, nSnap) {
+                      final unread = (nSnap.data ?? [])
+                          .where((n) => n['is_read'] != true)
+                          .length;
+                      return IconButton(
+                        tooltip: tr('اعلان‌ها', 'Notifications'),
+                        onPressed: _showNotificationsDialog,
+                        icon: Badge(
+                          isLabelVisible: unread > 0,
+                          label: Text(toPersianDigits(unread.toString())),
+                          child: const Icon(Icons.notifications_outlined),
+                        ),
+                      );
+                    },
+                  ),
+                  if (selectedListId != null)
+                    TextButton.icon(
+                      style:
+                          TextButton.styleFrom(foregroundColor: cs.onPrimary),
+                      onPressed: _showMembersDialog,
+                      icon: const Icon(Icons.group_add_outlined),
+                      label: Text(
+                        toPersianDigits(currentListMembers.length.toString()),
+                      ),
                     ),
-                    const Spacer(),
-                    IconButton(
-                      tooltip: 'حذف کار و فایل‌های ضمیمه',
-                      icon: const Icon(Icons.delete_outline, color: Colors.red),
-                      onPressed: _deleteTaskAndFiles,
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.close),
-                      onPressed: widget.onClose,
-                    ),
-                  ],
-                ),
+                  const SizedBox(width: 6),
+                ],
               ),
-            Expanded(
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  Row(
-                    children: [
-                      Checkbox(
-                        value: task['is_completed'] == true,
-                        onChanged: (v) async {
-                          await supabase.from('tasks').update(
-                              {'is_completed': v ?? false}).eq('id', task['id']);
-                        },
-                      ),
-                      Expanded(
-                        child: Text(
-                          task['title'] as String,
-                          style: const TextStyle(
-                            fontSize: 17,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                      if (widget.onClose == null)
-                        IconButton(
-                          tooltip: 'حذف کار و فایل‌های ضمیمه',
-                          icon: const Icon(
-                            Icons.delete_outline,
-                            color: Colors.red,
-                          ),
-                          onPressed: _deleteTaskAndFiles,
-                        ),
-                    ],
-                  ),
-                  const Divider(),
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.calendar_month_outlined),
-                    title: Text(
-                      dueStr.isEmpty ? 'تعیین تاریخ سررسید' : 'سررسید: $dueStr',
-                    ),
-                    trailing: dueStr.isNotEmpty
-                        ? IconButton(
-                            icon: const Icon(Icons.clear, size: 18),
-                            onPressed: () async {
-                              await supabase.from('tasks').update(
-                                  {'due_date': null}).eq('id', task['id']);
-                            },
-                          )
-                        : null,
-                    onTap: () => _pickDueDate(task),
-                  ),
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.person_outline),
-                    title: DropdownButtonFormField<String?>(
-                      value: listMembers
-                              .any((m) => m['user_id'] == currentAssignee)
-                          ? currentAssignee
-                          : null,
-                      decoration: const InputDecoration(
-                        labelText: 'مسئول انجام کار',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
-                      items: [
-                        const DropdownMenuItem<String?>(
-                          value: null,
-                          child: Text('تعیین نشده'),
-                        ),
-                        ...listMembers.map((m) {
-                          final prof = m['profiles'] as JsonRow?;
-                          return DropdownMenuItem<String?>(
-                            value: m['user_id'] as String,
-                            child: Text(
-                              (prof?['full_name'] ?? prof?['email'] ?? 'عضو')
-                                  .toString(),
-                            ),
-                          );
-                        }),
-                      ],
-                      onChanged: (val) async {
-                        await supabase.from('tasks').update(
-                            {'assigned_to': val}).eq('id', task['id']);
-                      },
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: notesCtrl,
-                    maxLines: 3,
-                    decoration: InputDecoration(
-                      labelText: 'یادداشت و توضیحات',
-                      border: const OutlineInputBorder(),
-                      suffixIcon: IconButton(
-                        tooltip: 'ذخیره یادداشت',
-                        icon: const Icon(Icons.save_outlined),
-                        onPressed: () async {
-                          await supabase.from('tasks').update(
-                              {'notes': notesCtrl.text}).eq('id', task['id']);
-                          _showMsg('یادداشت ذخیره شد.');
-                        },
+              drawer: isDesktop
+                  ? null
+                  : Drawer(
+                      child: _buildSidebar(
+                        allActiveTasks,
+                        subtasksByTask,
+                        closeDrawerOnTap: true,
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 18),
-                  // بخش فایل‌های ضمیمه
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        'فایل‌های ضمیمه',
-                        style: TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      FilledButton.tonalIcon(
-                        onPressed: uploadingFile ? null : _uploadAttachment,
-                        icon: uploadingFile
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.upload_file_rounded, size: 18),
-                        label: Text(
-                          uploadingFile ? 'در حال آپلود...' : 'افزودن فایل',
+              body: isDesktop
+                  ? Row(
+                      children: [
+                        SizedBox(
+                          width: 280,
+                          child: _buildSidebar(allActiveTasks, subtasksByTask),
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  StreamBuilder<List<JsonRow>>(
-                    stream: supabase
-                        .from('task_attachments')
-                        .stream(primaryKey: ['id'])
-                        .eq('task_id', widget.taskId)
-                        .order('created_at', ascending: true),
-                    builder: (context, attSnap) {
-                      final files = attSnap.data ?? [];
-                      if (files.isEmpty) {
-                        return const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 6),
-                          child: Text(
-                            'فایلی ضمیمه نشده است.',
-                            style:
-                                TextStyle(color: Colors.black45, fontSize: 12),
-                          ),
-                        );
-                      }
-                      return Column(
-                        children: files.map((f) {
-                          final size = (f['file_size'] as num?)?.toInt() ?? 0;
-                          return Card(
-                            elevation: 0,
-                            color: Colors.grey.shade100,
-                            margin: const EdgeInsets.only(bottom: 6),
-                            child: ListTile(
-                              dense: true,
-                              leading: const Icon(
-                                Icons.insert_drive_file_outlined,
-                                color: Color(0xFF1F6FEB),
-                              ),
-                              title: Text(
-                                f['file_name'] as String,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              subtitle: Text(
-                                formatBytes(size),
-                                style: const TextStyle(fontSize: 11),
-                              ),
-                              trailing: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    tooltip: 'دانلود / مشاهده',
-                                    icon: const Icon(
-                                      Icons.download_rounded,
-                                      size: 20,
-                                    ),
-                                    onPressed: () => _openAttachment(f),
-                                  ),
-                                  IconButton(
-                                    tooltip: 'حذف فایل',
-                                    icon: const Icon(
-                                      Icons.delete_outline,
-                                      color: Colors.red,
-                                      size: 20,
-                                    ),
-                                    onPressed: () => _deleteAttachment(f),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        }).toList(),
-                      );
-                    },
-                  ),
-                  const Divider(height: 24),
-                  const Text(
-                    'زیروظایف (چک‌لیست)',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: subtaskCtrl,
-                          onSubmitted: (_) => _addSubtask(),
-                          decoration: const InputDecoration(
-                            hintText: 'افزودن مرحله کوچک‌تر...',
-                            border: OutlineInputBorder(),
-                            isDense: true,
+                        VerticalDivider(width: 1, color: cs.outlineVariant),
+                        Expanded(
+                          flex: 3,
+                          child: _buildTasksPane(
+                            true,
+                            allActiveTasks,
+                            subtasksByTask,
+                            allTags,
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      IconButton.filled(
-                        onPressed: _addSubtask,
-                        icon: const Icon(Icons.add),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  StreamBuilder<List<JsonRow>>(
-                    stream: supabase
-                        .from('subtasks')
-                        .stream(primaryKey: ['id'])
-                        .eq('task_id', widget.taskId)
-                        .order('created_at', ascending: true),
-                    builder: (context, subSnap) {
-                      final subs = subSnap.data ?? [];
-                      return Column(
-                        children: subs.map((s) {
-                          final done = s['is_completed'] == true;
-                          return ListTile(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            leading: Checkbox(
-                              value: done,
-                              onChanged: (v) async {
-                                await supabase.from('subtasks').update(
-                                    {'is_completed': v ?? false}).eq(
-                                    'id', s['id']);
-                              },
-                            ),
-                            title: Text(
-                              s['title'] as String,
-                              style: TextStyle(
-                                decoration:
-                                    done ? TextDecoration.lineThrough : null,
-                              ),
-                            ),
-                            trailing: IconButton(
-                              icon: const Icon(Icons.close, size: 16),
-                              onPressed: () async {
-                                await supabase
-                                    .from('subtasks')
-                                    .delete()
-                                    .eq('id', s['id']);
-                              },
-                            ),
-                          );
-                        }).toList(),
-                      );
-                    },
-                  ),
-                  const Divider(height: 28),
-                  const Text(
-                    'گفت‌وگو و تبادل نظر تیمی',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  const SizedBox(height: 8),
-                  StreamBuilder<List<JsonRow>>(
-                    stream: supabase
-                        .from('comments')
-                        .stream(primaryKey: ['id'])
-                        .eq('task_id', widget.taskId)
-                        .order('created_at', ascending: true),
-                    builder: (context, cSnap) {
-                      final comments = cSnap.data ?? [];
-                      if (comments.isEmpty) {
-                        return const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 12),
-                          child: Text(
-                            'هنوز پیامی ثبت نشده است.',
-                            style: TextStyle(color: Colors.black45),
-                          ),
-                        );
-                      }
-                      return Column(
-                        children: comments.map((c) {
-                          final uid = c['user_id'] as String;
-                          final sender =
-                              widget.profilesMap[uid]?['full_name'] ?? 'همکار';
-                          final isMe = uid == supabase.auth.currentUser?.id;
-                          return Container(
-                            width: double.infinity,
-                            margin: const EdgeInsets.only(bottom: 8),
-                            padding: const EdgeInsets.all(10),
+                        if (selectedTaskId != null)
+                          Container(
+                            width: 420,
                             decoration: BoxDecoration(
-                              color: isMe
-                                  ? const Color(0xFFE3F2FD)
-                                  : Colors.grey.shade100,
-                              borderRadius: BorderRadius.circular(10),
+                              color: cs.surface,
+                              border: Border(
+                                right: BorderSide(color: cs.outlineVariant),
+                              ),
                             ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Text(
-                                      sender.toString(),
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 12,
-                                      ),
-                                    ),
-                                    Text(
-                                      formatShamsi(
-                                        c['created_at'] as String?,
-                                        withTime: true,
-                                      ),
-                                      style: const TextStyle(
-                                        fontSize: 10,
-                                        color: Colors.black54,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 4),
-                                Text(c['content'] as String),
-                              ],
+                            child: TaskDetailPanel(
+                              key: ValueKey(selectedTaskId),
+                              taskId: selectedTaskId!,
+                              profilesMap: profilesMap,
+                              existingTags: allTags,
+                              canEdit: _canEditList(selectedTaskListId),
+                              onStorageChanged: _refreshStorage,
+                              onClose: () =>
+                                  setState(() => selectedTaskId = null),
+                              onDeleted: () =>
+                                  setState(() => selectedTaskId = null),
                             ),
-                          );
-                        }).toList(),
-                      );
-                    },
-                  ),
-                ],
-              ),
-            ),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.grey.shade50,
-                border: Border(top: BorderSide(color: Colors.grey.shade300)),
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: commentCtrl,
-                      onSubmitted: (_) => _addComment(),
-                      decoration: const InputDecoration(
-                        hintText: 'نوشتن پیام برای همکاران...',
-                        border: OutlineInputBorder(),
-                        isDense: true,
-                      ),
+                          ),
+                      ],
+                    )
+                  : _buildTasksPane(
+                      false,
+                      allActiveTasks,
+                      subtasksByTask,
+                      allTags,
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton.filled(
-                    onPressed: _addComment,
-                    icon: const Icon(Icons.send_rounded),
-                  ),
-                ],
-              ),
-            ),
-          ],
+            );
+          },
         );
       },
     );
