@@ -29,17 +29,23 @@ jobs:
       - name: Run Backup and Cleanup Script
         run: |
           python3 - << 'EOF'
-          import io, json, os, smtplib, urllib.request, urllib.parse, zipfile
+          import io, json, os, smtplib, urllib.error, urllib.request, urllib.parse, zipfile
           from datetime import datetime, timedelta, timezone
           from email.message import EmailMessage
 
-          URL = os.environ['SUPABASE_URL']
-          KEY = os.environ['SUPABASE_SERVICE_KEY']
+          URL = os.environ['SUPABASE_URL'].rstrip('/')
+          KEY = os.environ['SUPABASE_SERVICE_KEY'].strip()
+
+          if not KEY or KEY.startswith('sb_publishable_'):
+              raise SystemExit("ERROR: SUPABASE_SERVICE_KEY must be the Secret key (sb_secret_...) or legacy service_role key, NOT sb_publishable_.")
+
           HEADERS = {
               'apikey': KEY,
-              'Authorization': f'Bearer {KEY}',
               'Content-Type': 'application/json',
+              'User-Agent': 'HA-Tasks-Backup/1.0',
           }
+          if KEY.startswith('eyJ'):
+              HEADERS['Authorization'] = f'Bearer {KEY}'
 
           def req(method, path, body=None, extra_headers=None):
               h = dict(HEADERS)
@@ -49,9 +55,14 @@ jobs:
               if body is not None:
                   data = body if isinstance(body, bytes) else json.dumps(body).encode('utf-8')
               r = urllib.request.Request(f"{URL}{path}", data=data, headers=h, method=method)
-              with urllib.request.urlopen(r) as resp:
-                  raw = resp.read()
-                  return json.loads(raw.decode('utf-8')) if raw else {}
+              try:
+                  with urllib.request.urlopen(r) as resp:
+                      raw = resp.read()
+                      return json.loads(raw.decode('utf-8')) if raw else {}
+              except urllib.error.HTTPError as e:
+                  err_body = e.read().decode('utf-8', errors='ignore')
+                  print(f"HTTP {e.code} on {method} {path}: {err_body}")
+                  raise
 
           now = datetime.now(timezone.utc)
 
@@ -72,7 +83,7 @@ jobs:
           except Exception as e:
               print("Backup cleanup warning:", e)
 
-          # ۲. پاکسازی دائمی تسک‌های حذف‌شده قدیمی‌تر از ۹۰ روز (۳۰ روز سطل زباله + ۶۰ روز آرشیو دیتابیس)
+          # ۲. پاکسازی دائمی تسک‌های حذف‌شده قدیمی‌تر از ۹۰ روز
           try:
               cutoff_90 = (now - timedelta(days=90)).isoformat()
               q = urllib.parse.quote(cutoff_90)
@@ -118,7 +129,6 @@ jobs:
                   'x-upsert': 'true',
               })
 
-              # لینک دانلود امن با اعتبار ۱۴ روز
               sign_res = req('POST', f'/storage/v1/object/sign/backups/{zip_name}', {'expiresIn': 1209600})
               download_url = f"{URL}/storage/v1{sign_res['signedURL']}"
 
