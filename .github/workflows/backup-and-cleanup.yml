@@ -1,0 +1,134 @@
+name: Monthly Backup & 90-Day Trash Cleanup
+
+on:
+  schedule:
+    # یکم هر ماه میلادی ساعت ۶ صبح: بکاپ کامل + ارسال ایمیل
+    - cron: '0 6 1 * *'
+    # هر ۳ روز یک‌بار ساعت ۷ صبح: حذف بکاپ‌های قدیمی‌تر از ۲ هفته و تسک‌های حذف‌شده بالای ۹۰ روز
+    - cron: '0 7 */3 * *'
+  workflow_dispatch:
+    inputs:
+      run_backup_now:
+        description: 'همین الان بکاپ گرفته و ایمیل ارسال شود؟'
+        type: boolean
+        default: true
+
+jobs:
+  maintenance:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: 'https://kvkgyrifhqiukgjkojyx.supabase.co'
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      SMTP_EMAIL: ${{ secrets.SMTP_EMAIL }}
+      SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
+      BACKUP_TO_EMAIL: ${{ secrets.BACKUP_TO_EMAIL }}
+      EVENT_NAME: ${{ github.event_name }}
+      EVENT_CRON: ${{ github.event.schedule }}
+      MANUAL_BACKUP: ${{ inputs.run_backup_now }}
+    steps:
+      - name: Run Backup and Cleanup Script
+        run: |
+          python3 - << 'EOF'
+          import json, os, smtplib, urllib.request, urllib.parse
+          from datetime import datetime, timedelta, timezone
+          from email.message import EmailMessage
+
+          URL = os.environ['SUPABASE_URL']
+          KEY = os.environ['SUPABASE_SERVICE_KEY']
+          HEADERS = {
+              'apikey': KEY,
+              'Authorization': f'Bearer {KEY}',
+              'Content-Type': 'application/json',
+          }
+
+          def req(method, path, body=None, extra_headers=None):
+              h = dict(HEADERS)
+              if extra_headers:
+                  h.update(extra_headers)
+              data = None
+              if body is not None:
+                  data = body if isinstance(body, bytes) else json.dumps(body).encode('utf-8')
+              r = urllib.request.Request(f"{URL}{path}", data=data, headers=h, method=method)
+              with urllib.request.urlopen(r) as resp:
+                  raw = resp.read()
+                  return json.loads(raw.decode('utf-8')) if raw else {}
+
+          now = datetime.now(timezone.utc)
+
+          # ۱. پاکسازی خودکار فایل‌های بکاپ قدیمی‌تر از ۱۴ روز (۲ هفته)
+          try:
+              backups = req('POST', '/storage/v1/object/list/backups', {'prefix': '', 'limit': 100})
+              old_backups = []
+              cutoff_14 = now - timedelta(days=14)
+              for b in backups:
+                  created = b.get('created_at')
+                  if created:
+                      dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                      if dt < cutoff_14:
+                          old_backups.append(b['name'])
+              if old_backups:
+                  req('DELETE', '/storage/v1/object/backups', {'prefixes': old_backups})
+                  print(f"Deleted {len(old_backups)} old backup(s).")
+          except Exception as e:
+              print("Backup cleanup warning:", e)
+
+          # ۲. پاکسازی دائمی تسک‌های حذف‌شده قدیمی‌تر از ۹۰ روز (۳۰ روز سطل زباله + ۶۰ روز آرشیو دیتابیس)
+          try:
+              cutoff_90 = (now - timedelta(days=90)).isoformat()
+              q = urllib.parse.quote(cutoff_90)
+              expired_tasks = req('GET', f'/rest/v1/tasks?deleted_at=lt.{q}&select=id')
+              for t in expired_tasks:
+                  tid = t['id']
+                  atts = req('GET', f'/rest/v1/task_attachments?task_id=eq.{tid}&select=file_path')
+                  paths = [a['file_path'] for a in atts if a.get('file_path')]
+                  if paths:
+                      req('DELETE', '/storage/v1/object/task-files', {'prefixes': paths})
+                  req('DELETE', f'/rest/v1/tasks?id=eq.{tid}')
+              print(f"Permanently purged {len(expired_tasks)} expired task(s).")
+          except Exception as e:
+              print("Trash purge warning:", e)
+
+          # ۳. بکاپ ماهانه کامل و ارسال لینک دانلود (دارای اعتبار ۲ هفته‌ای) به ایمیل
+          should_backup = (
+              os.environ.get('EVENT_CRON') == '0 6 1 * *'
+              or (os.environ.get('EVENT_NAME') == 'workflow_dispatch' and os.environ.get('MANUAL_BACKUP', 'true') == 'true')
+          )
+
+          if should_backup:
+              tables = [
+                  'profiles', 'lists', 'list_members', 'tasks',
+                  'subtasks', 'comments', 'note_history', 'activity_logs', 'task_attachments'
+              ]
+              dump = {'exported_at': now.isoformat()}
+              for tbl in tables:
+                  dump[tbl] = req('GET', f'/rest/v1/{tbl}?select=*')
+
+              filename = f"ha-tasks-backup-{now.strftime('%Y-%m-%d_%H-%M')}.json"
+              payload = json.dumps(dump, ensure_ascii=False, indent=2).encode('utf-8')
+              req('POST', f'/storage/v1/object/backups/{filename}', payload, {
+                  'Content-Type': 'application/json',
+                  'x-upsert': 'true',
+              })
+
+              # لینک دانلود امن با اعتبار ۱۴ روز
+              sign_res = req('POST', f'/storage/v1/object/sign/backups/{filename}', {'expiresIn': 1209600})
+              download_url = f"{URL}/storage/v1{sign_res['signedURL']}"
+
+              msg = EmailMessage()
+              msg['Subject'] = f"بکاپ ماهانه دیتابیس H.A. Tasks ({now.strftime('%Y-%m-%d')})"
+              msg['From'] = os.environ['SMTP_EMAIL']
+              msg['To'] = os.environ['BACKUP_TO_EMAIL']
+              msg.set_content(
+                  f"سلام،\n\n"
+                  f"نسخه پشتیبان کامل دیتابیس H.A. Tasks با موفقیت تهیه شد.\n\n"
+                  f"لینک دانلود مستقیم فایل بکاپ (معتبر به مدت ۱۴ روز):\n{download_url}\n\n"
+                  f"نکات مهم:\n"
+                  f"- این فایل پس از ۲ هفته به‌صورت خودکار از سرور پاک می‌شود تا فضایی اشغال نکند.\n"
+                  f"- برای بازیابی موارد پاک‌شده، کافی است فایل دانلودشده را از طریق دکمه «بازیابی از فایل بکاپ» در پایین منوی برنامه بارگذاری کنید.\n"
+              )
+
+              with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+                  smtp.login(os.environ['SMTP_EMAIL'], os.environ['SMTP_APP_PASSWORD'])
+                  smtp.send_message(msg)
+              print("Monthly backup created and emailed successfully.")
+          EOF
