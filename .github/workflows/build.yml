@@ -37,6 +37,17 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+          cache: true
+
+      - name: Cache Gradle & Android Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('pubspec.yaml') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
       - name: Setup Consistent Signing Keystore
         run: |
@@ -135,7 +146,7 @@ jobs:
           BUILD_NUM: ${{ github.run_number }}
         run: |
           python3 - << 'EOF'
-          import json, os, urllib.request, urllib.error
+          import json, os, urllib.request
 
           url = os.environ['SUPABASE_URL'].rstrip('/')
           key = os.environ['SUPABASE_SERVICE_KEY'].strip()
@@ -145,7 +156,6 @@ jobs:
           if key.startswith('eyJ'):
               headers['Authorization'] = f'Bearer {key}'
 
-          # ساخت باکت عمومی app-releases در صورت نبود
           try:
               req = urllib.request.Request(
                   f"{url}/storage/v1/bucket",
@@ -157,7 +167,6 @@ jobs:
           except Exception:
               pass
 
-          # آپلود فایل APK (جایگزین نسخه قبلی می‌شود تا فضای سرور اشغال نشود)
           with open('build/app/outputs/flutter-apk/app-release.apk', 'rb') as f:
               apk_bytes = f.read()
 
@@ -174,7 +183,6 @@ jobs:
           )
           urllib.request.urlopen(req)
 
-          # آپلود فایل version.json
           apk_public_url = f"{url}/storage/v1/object/public/app-releases/app-release.apk?v={build_num}"
           version_data = json.dumps({"build": build_num, "apk_url": apk_public_url}).encode('utf-8')
           req = urllib.request.Request(
@@ -209,6 +217,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+          cache: true
 
       - name: Generate Web files, Font & Green H.A. Logo
         run: |
