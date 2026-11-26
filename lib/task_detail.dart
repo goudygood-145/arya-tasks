@@ -85,7 +85,6 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
     final nowIso = DateTime.now().toUtc().toIso8601String();
 
     if (!newVal) {
-      // برداشتن تیک تسک: موارد قبلی قفل می‌مانند و فقط به‌روزرسانی جدید مجاز است
       final confirm = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -118,7 +117,6 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
       return;
     }
 
-    // تیک زدن تسک: قفل کردن موارد فعلی و بررسی تکرار خودکار
     await playTickSound();
     await supabase.from('tasks').update({
       'is_completed': true,
@@ -139,7 +137,6 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
 
     await logActivity(widget.taskId, currentUserName, 'کار را تیک زد (انجام شد)');
 
-    // ساخت خودکار دوره بعدی برای کارهای تکرارشونده
     final rec = (task['recurrence'] as String?) ?? 'none';
     if (rec != 'none') {
       final baseDate =
@@ -163,7 +160,8 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
         'created_by': currentUid,
         'created_by_name': currentUserName,
       });
-      _showMsg(tr('کار تکرارشونده برای دوره بعدی ساخته شد.', 'Next recurring task created.'));
+      _showMsg(tr('کار تکرارشونده برای دوره بعدی ساخته شد.',
+          'Next recurring task created.'));
     }
   }
 
@@ -198,11 +196,12 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
       'deleted_at': DateTime.now().toUtc().toIso8601String(),
       'deleted_by': currentUid,
     }).eq('id', widget.taskId);
-    await logActivity(widget.taskId, currentUserName, 'کار را به سطل زباله منتقل کرد');
+    await logActivity(
+        widget.taskId, currentUserName, 'کار را به سطل زباله منتقل کرد');
     widget.onDeleted?.call();
   }
 
-Future<void> _pickDueDate(JsonRow task) async {
+  Future<void> _pickDueDate(JsonRow task) async {
     if (!widget.canEdit || task['is_completed'] == true) return;
     final initial = DateTime.tryParse(task['due_date'] ?? '') ?? DateTime.now();
     final picked = await pickAppDate(context, initialDate: initial);
@@ -308,7 +307,8 @@ Future<void> _pickDueDate(JsonRow task) async {
         'uploaded_by': currentUid,
       });
 
-      await logActivity(widget.taskId, currentUserName, 'فایل «${file.name}» را ضمیمه کرد');
+      await logActivity(
+          widget.taskId, currentUserName, 'فایل «${file.name}» را ضمیمه کرد');
       await widget.onStorageChanged?.call();
 
       final totalUsed = await fetchTotalStorageBytes();
@@ -354,7 +354,8 @@ Future<void> _pickDueDate(JsonRow task) async {
       final signedUrl = await supabase.storage
           .from('task-files')
           .createSignedUrl(attachment['file_path'] as String, 3600);
-      await launchUrl(Uri.parse(signedUrl), mode: LaunchMode.externalApplication);
+      await launchUrl(Uri.parse(signedUrl),
+          mode: LaunchMode.externalApplication);
     } catch (e) {
       _showMsg('$e');
     }
@@ -408,7 +409,6 @@ Future<void> _pickDueDate(JsonRow task) async {
       'content': text,
     });
 
-    // تشخیص @mention و ارسال اعلان به همکاران
     for (final m in listMembers) {
       final prof = m['profiles'] as JsonRow?;
       final uid = m['user_id'] as String?;
@@ -433,7 +433,23 @@ Future<void> _pickDueDate(JsonRow task) async {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  // تشخیص خودکار لینک و شماره تلفن در متن یادداشت و پیام‌ها
+  Widget _sectionHeader(String title, IconData icon, ColorScheme cs) {
+    return Row(
+      children: [
+        Icon(icon, size: 16, color: cs.primary),
+        const SizedBox(width: 6),
+        Text(
+          title,
+          style: TextStyle(
+            fontSize: 13.5,
+            fontWeight: FontWeight.bold,
+            color: cs.onSurface,
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildClickableText(String text, {TextStyle? style}) {
     final regex = RegExp(
       r'((https?:\/\/|www\.)[^\s]+|(\+98|0)?9\d{9})',
@@ -473,7 +489,12 @@ Future<void> _pickDueDate(JsonRow task) async {
     }
     return RichText(
       text: TextSpan(
-        style: style ?? DefaultTextStyle.of(context).style,
+        style: style ??
+            TextStyle(
+              fontSize: 12.5,
+              color: Theme.of(context).colorScheme.onSurface,
+              fontFamily: 'Vazirmatn',
+            ),
         children: spans,
       ),
     );
@@ -482,6 +503,22 @@ Future<void> _pickDueDate(JsonRow task) async {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final optionStyle = TextStyle(
+      fontSize: 12,
+      color: cs.onSurfaceVariant,
+      fontFamily: 'Vazirmatn',
+    );
+    final labelStyle = TextStyle(
+      fontSize: 12.5,
+      fontWeight: FontWeight.w600,
+      color: cs.onSurface,
+      fontFamily: 'Vazirmatn',
+    );
+    final hintStyle = TextStyle(
+      fontSize: 11.5,
+      color: cs.onSurfaceVariant.withAlpha(170),
+      fontFamily: 'Vazirmatn',
+    );
 
     return StreamBuilder<List<JsonRow>>(
       stream: supabase
@@ -493,7 +530,8 @@ Future<void> _pickDueDate(JsonRow task) async {
           return const Center(child: CircularProgressIndicator());
         }
         if (snapshot.data!.isEmpty) {
-          return Center(child: Text(tr('این کار حذف شده است.', 'Task deleted.')));
+          return Center(
+              child: Text(tr('این کار حذف شده است.', 'Task deleted.')));
         }
         final task = snapshot.data!.first;
         _fetchMembersForTask(task['list_id'] as String);
@@ -505,9 +543,11 @@ Future<void> _pickDueDate(JsonRow task) async {
         final currentPriority = (task['priority'] as String?) ?? 'normal';
         final currentRecurrence = (task['recurrence'] as String?) ?? 'none';
         final currentTags = List<String>.from((task['tags'] as List?) ?? []);
-        final creatorName = (task['created_by_name'] as String?)?.isNotEmpty == true
-            ? task['created_by_name'] as String
-            : (widget.profilesMap[task['created_by']]?['full_name'] ?? 'نامشخص');
+        final creatorName =
+            (task['created_by_name'] as String?)?.isNotEmpty == true
+                ? task['created_by_name'] as String
+                : (widget.profilesMap[task['created_by']]?['full_name'] ??
+                    'نامشخص');
 
         final allSuggestions = <String>{
           ...defaultTagSuggestions,
@@ -518,19 +558,22 @@ Future<void> _pickDueDate(JsonRow task) async {
           children: [
             if (widget.onClose != null)
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 color: cs.surfaceContainerHighest,
                 child: Row(
                   children: [
                     Text(
                       tr('جزئیات کار', 'Task Details'),
-                      style: const TextStyle(fontWeight: FontWeight.bold),
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 14),
                     ),
                     const Spacer(),
                     if (widget.canEdit)
                       IconButton(
                         tooltip: tr('انتقال به سطل زباله', 'Move to Trash'),
-                        icon: const Icon(Icons.delete_outline, color: Colors.red),
+                        icon: const Icon(Icons.delete_outline,
+                            color: Colors.red),
                         onPressed: () => _softDeleteTask(task),
                       ),
                     IconButton(
@@ -543,11 +586,13 @@ Future<void> _pickDueDate(JsonRow task) async {
             if (isDone)
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                 color: Colors.green.withAlpha(30),
                 child: Row(
                   children: [
-                    const Icon(Icons.lock_outline, size: 16, color: Colors.green),
+                    const Icon(Icons.lock_outline,
+                        size: 16, color: Colors.green),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -555,7 +600,8 @@ Future<void> _pickDueDate(JsonRow task) async {
                           'این کار تیک خورده و قفل شده است (${task['completed_by_name'] ?? ''} - ${formatAppDate(task['completed_at'] as String?, withTime: true)}).',
                           'Completed and locked.',
                         ),
-                        style: const TextStyle(fontSize: 11, color: Colors.green),
+                        style:
+                            const TextStyle(fontSize: 11, color: Colors.green),
                       ),
                     ),
                   ],
@@ -577,7 +623,7 @@ Future<void> _pickDueDate(JsonRow task) async {
                         child: Text(
                           task['title'] as String,
                           style: TextStyle(
-                            fontSize: 17,
+                            fontSize: 16,
                             fontWeight: FontWeight.bold,
                             decoration:
                                 isDone ? TextDecoration.lineThrough : null,
@@ -592,63 +638,118 @@ Future<void> _pickDueDate(JsonRow task) async {
                         ),
                     ],
                   ),
-                  // شناسنامه غیرقابل تغییر تسک
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8),
                     child: Text(
                       '${tr('ایجاد توسط:', 'Created by:')} $creatorName • ${formatAppDate(task['created_at'] as String?, withTime: true)}',
-                      style: TextStyle(fontSize: 11, color: cs.onSurfaceVariant),
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        color: cs.onSurfaceVariant.withAlpha(190),
+                      ),
                     ),
                   ),
-                  const Divider(),
-                  // سررسید
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.calendar_month_outlined),
-                    title: Text(
-                      dueStr.isEmpty
-                          ? tr('تعیین تاریخ سررسید', 'Set Due Date')
-                          : '${tr('سررسید:', 'Due:')} $dueStr',
-                    ),
-                    trailing: (dueStr.isNotEmpty && isEditable)
-                        ? IconButton(
-                            icon: const Icon(Icons.clear, size: 18),
-                            onPressed: () async {
-                              await supabase.from('tasks').update(
-                                  {'due_date': null}).eq('id', task['id']);
-                            },
-                          )
-                        : null,
+                  const Divider(height: 16),
+
+                  // کادر مشخص و برجسته برای تاریخ سررسید
+                  InkWell(
+                    borderRadius: BorderRadius.circular(10),
                     onTap: isEditable ? () => _pickDueDate(task) : null,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: dueStr.isNotEmpty
+                            ? cs.primaryContainer.withAlpha(90)
+                            : cs.surfaceContainerHighest.withAlpha(130),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: dueStr.isNotEmpty
+                              ? cs.primary.withAlpha(140)
+                              : cs.outlineVariant,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.calendar_month_rounded,
+                              size: 20, color: cs.primary),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  tr('تاریخ سررسید', 'Due Date'),
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.bold,
+                                    color: cs.onSurface,
+                                  ),
+                                ),
+                                Text(
+                                  dueStr.isEmpty
+                                      ? tr('برای انتخاب تاریخ کلیک کنید',
+                                          'Tap to pick a date')
+                                      : dueStr,
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    color: dueStr.isNotEmpty
+                                        ? cs.primary
+                                        : cs.onSurfaceVariant,
+                                    fontWeight: dueStr.isNotEmpty
+                                        ? FontWeight.w600
+                                        : FontWeight.normal,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (dueStr.isNotEmpty && isEditable)
+                            IconButton(
+                              visualDensity: VisualDensity.compact,
+                              icon: const Icon(Icons.clear, size: 17),
+                              onPressed: () async {
+                                await supabase.from('tasks').update(
+                                    {'due_date': null}).eq('id', task['id']);
+                              },
+                            ),
+                        ],
+                      ),
+                    ),
                   ),
-                  // اولویت و تکرار
+                  const SizedBox(height: 14),
+
+                  // اولویت و تکرار با فونت داخلی ظریف‌تر و کمرنگ‌تر
                   Row(
                     children: [
                       Expanded(
                         child: DropdownButtonFormField<String>(
                           value: currentPriority,
+                          style: optionStyle,
                           decoration: InputDecoration(
                             labelText: tr('اولویت', 'Priority'),
+                            labelStyle: labelStyle,
                             border: const OutlineInputBorder(),
                             isDense: true,
                           ),
                           items: [
                             DropdownMenuItem(
                               value: 'normal',
-                              child: Text(tr('عادی', 'Normal')),
+                              child: Text(tr('عادی', 'Normal'),
+                                  style: optionStyle),
                             ),
                             DropdownMenuItem(
                               value: 'medium',
                               child: Text(
                                 tr('متوسط', 'Medium'),
-                                style: const TextStyle(color: Colors.orange),
+                                style: optionStyle.copyWith(
+                                    color: Colors.orange.shade700),
                               ),
                             ),
                             DropdownMenuItem(
                               value: 'urgent',
                               child: Text(
                                 tr('فوری', 'Urgent'),
-                                style: const TextStyle(
+                                style: optionStyle.copyWith(
                                     color: Colors.red,
                                     fontWeight: FontWeight.bold),
                               ),
@@ -659,8 +760,8 @@ Future<void> _pickDueDate(JsonRow task) async {
                                   if (v == null) return;
                                   await supabase.from('tasks').update(
                                       {'priority': v}).eq('id', task['id']);
-                                  await logActivity(
-                                      widget.taskId, currentUserName, 'اولویت را به $v تغییر داد');
+                                  await logActivity(widget.taskId,
+                                      currentUserName, 'اولویت را به $v تغییر داد');
                                 }
                               : null,
                         ),
@@ -669,20 +770,30 @@ Future<void> _pickDueDate(JsonRow task) async {
                       Expanded(
                         child: DropdownButtonFormField<String>(
                           value: currentRecurrence,
+                          style: optionStyle,
                           decoration: InputDecoration(
                             labelText: tr('تکرار', 'Repeat'),
+                            labelStyle: labelStyle,
                             border: const OutlineInputBorder(),
                             isDense: true,
                           ),
                           items: [
                             DropdownMenuItem(
-                                value: 'none', child: Text(tr('بدون تکرار', 'None'))),
+                                value: 'none',
+                                child: Text(tr('بدون تکرار', 'None'),
+                                    style: optionStyle)),
                             DropdownMenuItem(
-                                value: 'daily', child: Text(tr('روزانه', 'Daily'))),
+                                value: 'daily',
+                                child: Text(tr('روزانه', 'Daily'),
+                                    style: optionStyle)),
                             DropdownMenuItem(
-                                value: 'weekly', child: Text(tr('هفتگی', 'Weekly'))),
+                                value: 'weekly',
+                                child: Text(tr('هفتگی', 'Weekly'),
+                                    style: optionStyle)),
                             DropdownMenuItem(
-                                value: 'monthly', child: Text(tr('ماهانه', 'Monthly'))),
+                                value: 'monthly',
+                                child: Text(tr('ماهانه', 'Monthly'),
+                                    style: optionStyle)),
                           ],
                           onChanged: isEditable
                               ? (v) async {
@@ -696,22 +807,26 @@ Future<void> _pickDueDate(JsonRow task) async {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  // مسئول اصلی تسک
+
+                  // مسئول اصلی کار
                   DropdownButtonFormField<String?>(
                     value: listMembers
                             .any((m) => m['user_id'] == currentAssignee)
                         ? currentAssignee
                         : null,
+                    style: optionStyle,
                     decoration: InputDecoration(
                       labelText: tr('مسئول اصلی کار', 'Task Assignee'),
-                      prefixIcon: const Icon(Icons.person_outline),
+                      labelStyle: labelStyle,
+                      prefixIcon: const Icon(Icons.person_outline, size: 18),
                       border: const OutlineInputBorder(),
                       isDense: true,
                     ),
                     items: [
                       DropdownMenuItem<String?>(
                         value: null,
-                        child: Text(tr('تعیین نشده', 'Unassigned')),
+                        child: Text(tr('تعیین نشده', 'Unassigned'),
+                            style: optionStyle),
                       ),
                       ...listMembers.map((m) {
                         final prof = m['profiles'] as JsonRow?;
@@ -720,6 +835,7 @@ Future<void> _pickDueDate(JsonRow task) async {
                           child: Text(
                             (prof?['full_name'] ?? prof?['email'] ?? 'عضو')
                                 .toString(),
+                            style: optionStyle,
                           ),
                         );
                       }),
@@ -736,7 +852,8 @@ Future<void> _pickDueDate(JsonRow task) async {
                             if (val != null) {
                               await sendAppNotification(
                                 targetUserId: val,
-                                title: tr('کار جدید به شما واگذار شد', 'Task assigned to you'),
+                                title: tr('کار جدید به شما واگذار شد',
+                                    'Task assigned to you'),
                                 body: task['title'] as String,
                                 taskId: widget.taskId,
                                 listId: task['list_id'] as String?,
@@ -745,49 +862,57 @@ Future<void> _pickDueDate(JsonRow task) async {
                           }
                         : null,
                   ),
-                  const SizedBox(height: 14),
-                  // برچسب‌ها با پیشنهاد خودکار هنگام نوشتن
-                  Text(
-                    tr('برچسب‌ها (تگ‌ها)', 'Tags'),
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
+                  const SizedBox(height: 16),
+
+                  // برچسب‌ها
+                  _sectionHeader(
+                      tr('برچسب‌ها (تگ‌ها)', 'Tags'), Icons.tag_rounded, cs),
                   const SizedBox(height: 6),
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 4,
-                    children: currentTags
-                        .map((t) => Chip(
-                              label: Text('#$t', style: const TextStyle(fontSize: 12)),
-                              visualDensity: VisualDensity.compact,
-                              onDeleted:
-                                  isEditable ? () => _removeTag(task, t) : null,
-                            ))
-                        .toList(),
-                  ),
-                  if (isEditable) ...[
-                    const SizedBox(height: 6),
+                  if (currentTags.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: currentTags
+                            .map((t) => Chip(
+                                  label: Text('#$t',
+                                      style: const TextStyle(fontSize: 11.5)),
+                                  visualDensity: VisualDensity.compact,
+                                  onDeleted: isEditable
+                                      ? () => _removeTag(task, t)
+                                      : null,
+                                ))
+                            .toList(),
+                      ),
+                    ),
+                  if (isEditable)
                     Autocomplete<String>(
                       optionsBuilder: (val) {
                         final q = val.text.trim().replaceAll('#', '');
                         if (q.isEmpty) return allSuggestions.take(5);
-                        return allSuggestions
-                            .where((s) => s.toLowerCase().contains(q.toLowerCase()));
+                        return allSuggestions.where(
+                            (s) => s.toLowerCase().contains(q.toLowerCase()));
                       },
                       onSelected: (sel) => _addTag(task, sel),
                       fieldViewBuilder: (ctx, ctrl, focus, onSubmit) {
                         return TextField(
                           controller: ctrl,
                           focusNode: focus,
+                          style: const TextStyle(fontSize: 12.5),
                           onSubmitted: (v) {
                             _addTag(task, v);
                             ctrl.clear();
                           },
                           decoration: InputDecoration(
-                            hintText: tr('تایپ تگ جدید یا انتخاب از پیشنهادها...', 'Add tag...'),
+                            hintText: tr(
+                                'تایپ تگ جدید یا انتخاب از پیشنهادها...',
+                                'Add tag...'),
+                            hintStyle: hintStyle,
                             border: const OutlineInputBorder(),
                             isDense: true,
                             suffixIcon: IconButton(
-                              icon: const Icon(Icons.add),
+                              icon: const Icon(Icons.add, size: 18),
                               onPressed: () {
                                 _addTag(task, ctrl.text);
                                 ctrl.clear();
@@ -797,9 +922,9 @@ Future<void> _pickDueDate(JsonRow task) async {
                         );
                       },
                     ),
-                  ],
                   const Divider(height: 24),
-                  // زیروظایف با درصد پیشرفت سبز، ارجاع چندنفره و ثبت تیک‌زننده
+
+                  // زیروظایف
                   StreamBuilder<List<JsonRow>>(
                     stream: supabase
                         .from('subtasks')
@@ -819,14 +944,15 @@ Future<void> _pickDueDate(JsonRow task) async {
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              Text(
-                                tr('زیروظایف (چک‌لیست)', 'Subtasks'),
-                                style: const TextStyle(fontWeight: FontWeight.bold),
-                              ),
+                              _sectionHeader(
+                                  tr('زیروظایف (چک‌لیست)', 'Subtasks'),
+                                  Icons.checklist_rounded,
+                                  cs),
                               if (subs.isNotEmpty)
                                 Text(
                                   '${toPersianDigits((percent * 100).round().toString())}٪',
                                   style: const TextStyle(
+                                    fontSize: 12,
                                     color: Color(0xFF16A34A),
                                     fontWeight: FontWeight.bold,
                                   ),
@@ -839,7 +965,7 @@ Future<void> _pickDueDate(JsonRow task) async {
                               borderRadius: BorderRadius.circular(6),
                               child: LinearProgressIndicator(
                                 value: percent,
-                                minHeight: 8,
+                                minHeight: 7,
                                 backgroundColor: cs.surfaceContainerHighest,
                                 valueColor: const AlwaysStoppedAnimation(
                                     Color(0xFF16A34A)),
@@ -853,9 +979,12 @@ Future<void> _pickDueDate(JsonRow task) async {
                                 Expanded(
                                   child: TextField(
                                     controller: subtaskCtrl,
+                                    style: const TextStyle(fontSize: 12.5),
                                     onSubmitted: (_) => _addSubtask(task),
                                     decoration: InputDecoration(
-                                      hintText: tr('افزودن زیروظیفه...', 'Add subtask...'),
+                                      hintText: tr('افزودن زیروظیفه...',
+                                          'Add subtask...'),
+                                      hintStyle: hintStyle,
                                       border: const OutlineInputBorder(),
                                       isDense: true,
                                     ),
@@ -863,35 +992,42 @@ Future<void> _pickDueDate(JsonRow task) async {
                                 ),
                                 const SizedBox(width: 6),
                                 PopupMenuButton<String?>(
-                                  tooltip: tr('ارجاع این زیروظیفه به همکار', 'Assign subtask'),
+                                  tooltip: tr('ارجاع این زیروظیفه به همکار',
+                                      'Assign subtask'),
                                   icon: Icon(
                                     Icons.person_add_alt_1_outlined,
+                                    size: 20,
                                     color: selectedSubtaskAssignee != null
                                         ? cs.primary
-                                        : null,
+                                        : cs.onSurfaceVariant,
                                   ),
                                   onSelected: (v) => setState(
                                       () => selectedSubtaskAssignee = v),
                                   itemBuilder: (_) => [
                                     PopupMenuItem<String?>(
                                       value: null,
-                                      child: Text(tr('بدون مسئول', 'Unassigned')),
+                                      child: Text(
+                                          tr('بدون مسئول', 'Unassigned'),
+                                          style: optionStyle),
                                     ),
                                     ...listMembers.map((m) {
                                       final p = m['profiles'] as JsonRow?;
                                       return PopupMenuItem<String?>(
                                         value: m['user_id'] as String,
-                                        child: Text((p?['full_name'] ??
-                                                p?['email'] ??
-                                                'عضو')
-                                            .toString()),
+                                        child: Text(
+                                          (p?['full_name'] ??
+                                                  p?['email'] ??
+                                                  'عضو')
+                                              .toString(),
+                                          style: optionStyle,
+                                        ),
                                       );
                                     }),
                                   ],
                                 ),
                                 IconButton.filled(
                                   onPressed: () => _addSubtask(task),
-                                  icon: const Icon(Icons.add),
+                                  icon: const Icon(Icons.add, size: 18),
                                 ),
                               ],
                             ),
@@ -906,7 +1042,8 @@ Future<void> _pickDueDate(JsonRow task) async {
                                         ?['full_name'] ??
                                     '')
                                 : '';
-                            final compBy = (s['completed_by_name'] ?? '').toString();
+                            final compBy =
+                                (s['completed_by_name'] ?? '').toString();
                             final compAt = formatAppDate(
                                 s['completed_at'] as String?,
                                 withTime: true);
@@ -938,6 +1075,7 @@ Future<void> _pickDueDate(JsonRow task) async {
                               title: Text(
                                 s['title'] as String,
                                 style: TextStyle(
+                                  fontSize: 12.5,
                                   decoration:
                                       done ? TextDecoration.lineThrough : null,
                                 ),
@@ -949,7 +1087,7 @@ Future<void> _pickDueDate(JsonRow task) async {
                                     Text(
                                       '${tr('مسئول:', 'Assignee:')} $subAssigneeName',
                                       style: TextStyle(
-                                          fontSize: 11, color: cs.primary),
+                                          fontSize: 10.5, color: cs.primary),
                                     ),
                                   if (done && compBy.isNotEmpty)
                                     Text(
@@ -978,11 +1116,12 @@ Future<void> _pickDueDate(JsonRow task) async {
                     },
                   ),
                   const Divider(height: 24),
-                  // یادداشت‌ها + تاریخچه کامل ویرایش یادداشت‌ها (Notes Log)
-                  Text(
-                    tr('یادداشت‌ها و تاریخچه به‌روزرسانی', 'Notes & History'),
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
+
+                  // یادداشت‌ها
+                  _sectionHeader(
+                      tr('یادداشت‌ها و تاریخچه به‌روزرسانی', 'Notes & History'),
+                      Icons.notes_rounded,
+                      cs),
                   const SizedBox(height: 8),
                   if (isEditable)
                     Row(
@@ -991,10 +1130,12 @@ Future<void> _pickDueDate(JsonRow task) async {
                           child: TextField(
                             controller: noteUpdateCtrl,
                             maxLines: 2,
+                            style: const TextStyle(fontSize: 12.5),
                             decoration: InputDecoration(
                               hintText: tr(
-                                  'ثبت یادداشت یا به‌روزرسانی جدید (با ثبت نام و تاریخ)...',
+                                  'ثبت یادداشت یا به‌روزرسانی جدید...',
                                   'Add new note update...'),
+                              hintStyle: hintStyle,
                               border: const OutlineInputBorder(),
                               isDense: true,
                             ),
@@ -1004,7 +1145,7 @@ Future<void> _pickDueDate(JsonRow task) async {
                         IconButton.filled(
                           tooltip: tr('ثبت یادداشت', 'Save Note'),
                           onPressed: () => _addNoteEntry(task),
-                          icon: const Icon(Icons.save_outlined),
+                          icon: const Icon(Icons.save_outlined, size: 18),
                         ),
                       ],
                     ),
@@ -1022,8 +1163,7 @@ Future<void> _pickDueDate(JsonRow task) async {
                         if (fallback.isEmpty) {
                           return Text(
                             tr('یادداشتی ثبت نشده است.', 'No notes yet.'),
-                            style: TextStyle(
-                                color: cs.onSurfaceVariant, fontSize: 12),
+                            style: hintStyle,
                           );
                         }
                         return _buildClickableText(fallback);
@@ -1076,29 +1216,29 @@ Future<void> _pickDueDate(JsonRow task) async {
                     },
                   ),
                   const Divider(height: 24),
+
                   // فایل‌های ضمیمه
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Text(
-                        tr('فایل‌های ضمیمه', 'Attachments'),
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
+                      _sectionHeader(tr('فایل‌های ضمیمه', 'Attachments'),
+                          Icons.attach_file_rounded, cs),
                       if (isEditable)
                         FilledButton.tonalIcon(
                           onPressed: uploadingFile ? null : _uploadAttachment,
                           icon: uploadingFile
                               ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
+                                  width: 14,
+                                  height: 14,
                                   child:
                                       CircularProgressIndicator(strokeWidth: 2),
                                 )
-                              : const Icon(Icons.upload_file_rounded, size: 18),
+                              : const Icon(Icons.upload_file_rounded, size: 16),
                           label: Text(
                             uploadingFile
                                 ? tr('در حال آپلود...', 'Uploading...')
                                 : tr('افزودن فایل', 'Add File'),
+                            style: const TextStyle(fontSize: 12),
                           ),
                         ),
                     ],
@@ -1115,8 +1255,7 @@ Future<void> _pickDueDate(JsonRow task) async {
                       if (files.isEmpty) {
                         return Text(
                           tr('فایلی ضمیمه نشده است.', 'No files attached.'),
-                          style: TextStyle(
-                              color: cs.onSurfaceVariant, fontSize: 12),
+                          style: hintStyle,
                         );
                       }
                       return Column(
@@ -1129,25 +1268,26 @@ Future<void> _pickDueDate(JsonRow task) async {
                             child: ListTile(
                               dense: true,
                               leading: Icon(Icons.insert_drive_file_outlined,
-                                  color: cs.primary),
+                                  size: 18, color: cs.primary),
                               title: Text(f['file_name'] as String,
+                                  style: const TextStyle(fontSize: 12),
                                   overflow: TextOverflow.ellipsis),
                               subtitle: Text(formatBytes(size),
-                                  style: const TextStyle(fontSize: 11)),
+                                  style: const TextStyle(fontSize: 10.5)),
                               trailing: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   IconButton(
                                     tooltip: tr('دانلود', 'Download'),
                                     icon: const Icon(Icons.download_rounded,
-                                        size: 20),
+                                        size: 18),
                                     onPressed: () => _openAttachment(f),
                                   ),
                                   if (isEditable)
                                     IconButton(
                                       tooltip: tr('حذف فایل', 'Delete file'),
                                       icon: const Icon(Icons.delete_outline,
-                                          color: Colors.red, size: 20),
+                                          color: Colors.red, size: 18),
                                       onPressed: () => _deleteAttachment(f),
                                     ),
                                 ],
@@ -1159,11 +1299,13 @@ Future<void> _pickDueDate(JsonRow task) async {
                     },
                   ),
                   const Divider(height: 24),
-                  // گفت‌وگو و تبادل نظر تیمی
-                  Text(
-                    tr('گفت‌وگو و تبادل نظر (با @ منشن کنید)', 'Comments (use @ to mention)'),
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
+
+                  // گفت‌وگو و تبادل نظر
+                  _sectionHeader(
+                      tr('گفت‌وگو و تبادل نظر (با @ منشن کنید)',
+                          'Comments (use @ to mention)'),
+                      Icons.chat_bubble_outline_rounded,
+                      cs),
                   const SizedBox(height: 8),
                   StreamBuilder<List<JsonRow>>(
                     stream: supabase
@@ -1175,11 +1317,10 @@ Future<void> _pickDueDate(JsonRow task) async {
                       final comments = cSnap.data ?? [];
                       if (comments.isEmpty) {
                         return Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          padding: const EdgeInsets.symmetric(vertical: 6),
                           child: Text(
                             tr('هنوز پیامی ثبت نشده است.', 'No comments yet.'),
-                            style: TextStyle(
-                                color: cs.onSurfaceVariant, fontSize: 12),
+                            style: hintStyle,
                           ),
                         );
                       }
@@ -1215,7 +1356,7 @@ Future<void> _pickDueDate(JsonRow task) async {
                                       sender.toString(),
                                       style: const TextStyle(
                                           fontWeight: FontWeight.bold,
-                                          fontSize: 12),
+                                          fontSize: 11.5),
                                     ),
                                     Text(
                                       formatAppDate(c['created_at'] as String?,
@@ -1236,14 +1377,14 @@ Future<void> _pickDueDate(JsonRow task) async {
                     },
                   ),
                   const Divider(height: 24),
-                  // سابقه تغییرات تسک (Activity Log)
+
+                  // سابقه تغییرات
                   ExpansionTile(
                     tilePadding: EdgeInsets.zero,
-                    title: Text(
-                      tr('سابقه تغییرات (Activity Log)', 'Activity Log'),
-                      style: const TextStyle(
-                          fontSize: 13, fontWeight: FontWeight.bold),
-                    ),
+                    title: _sectionHeader(
+                        tr('سابقه تغییرات (Activity Log)', 'Activity Log'),
+                        Icons.history_rounded,
+                        cs),
                     children: [
                       StreamBuilder<List<JsonRow>>(
                         stream: supabase
@@ -1258,7 +1399,7 @@ Future<void> _pickDueDate(JsonRow task) async {
                               padding: const EdgeInsets.all(8),
                               child: Text(
                                 tr('تغییری ثبت نشده است.', 'No activity yet.'),
-                                style: const TextStyle(fontSize: 11),
+                                style: hintStyle,
                               ),
                             );
                           }
@@ -1269,10 +1410,10 @@ Future<void> _pickDueDate(JsonRow task) async {
                                       dense: true,
                                       contentPadding: EdgeInsets.zero,
                                       leading:
-                                          const Icon(Icons.history, size: 16),
+                                          const Icon(Icons.history, size: 15),
                                       title: Text(
                                         '${l['actor_name']}: ${l['action']}',
-                                        style: const TextStyle(fontSize: 12),
+                                        style: const TextStyle(fontSize: 11.5),
                                       ),
                                       subtitle: Text(
                                         formatAppDate(
@@ -1302,9 +1443,12 @@ Future<void> _pickDueDate(JsonRow task) async {
                     Expanded(
                       child: TextField(
                         controller: commentCtrl,
+                        style: const TextStyle(fontSize: 12.5),
                         onSubmitted: (_) => _addComment(task),
                         decoration: InputDecoration(
-                          hintText: tr('نوشتن پیام برای همکاران...', 'Write a comment...'),
+                          hintText: tr('نوشتن پیام برای همکاران...',
+                              'Write a comment...'),
+                          hintStyle: hintStyle,
                           border: const OutlineInputBorder(),
                           isDense: true,
                         ),
@@ -1313,7 +1457,7 @@ Future<void> _pickDueDate(JsonRow task) async {
                     const SizedBox(width: 8),
                     IconButton.filled(
                       onPressed: () => _addComment(task),
-                      icon: const Icon(Icons.send_rounded),
+                      icon: const Icon(Icons.send_rounded, size: 18),
                     ),
                   ],
                 ),
