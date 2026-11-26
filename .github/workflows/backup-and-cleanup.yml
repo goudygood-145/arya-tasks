@@ -2,16 +2,20 @@ name: Monthly Backup & 90-Day Trash Cleanup
 
 on:
   schedule:
-    # یکم هر ماه میلادی ساعت ۶ صبح: بکاپ کامل فشرده (ZIP) + ارسال ایمیل
+    # یکم هر ماه میلادی ساعت ۶ صبح: بکاپ سبک دیتابیس (ZIP) + ارسال ایمیل
     - cron: '0 6 1 * *'
     # هر ۳ روز یک‌بار ساعت ۷ صبح: حذف بکاپ‌های قدیمی‌تر از ۲ هفته و تسک‌های حذف‌شده بالای ۹۰ روز
     - cron: '0 7 */3 * *'
   workflow_dispatch:
     inputs:
       run_backup_now:
-        description: 'همین الان بکاپ زیپ‌شده گرفته و ایمیل ارسال شود؟'
+        description: 'همین الان بکاپ گرفته و ایمیل ارسال شود؟'
         type: boolean
         default: true
+      include_files:
+        description: 'همراه با تمام فایل‌های آپلودشده؟ (بکاپ کامل)'
+        type: boolean
+        default: false
 
 jobs:
   maintenance:
@@ -25,6 +29,7 @@ jobs:
       EVENT_NAME: ${{ github.event_name }}
       EVENT_CRON: ${{ github.event.schedule }}
       MANUAL_BACKUP: ${{ inputs.run_backup_now }}
+      INCLUDE_FILES: ${{ inputs.include_files }}
     steps:
       - name: Run Backup and Cleanup Script
         run: |
@@ -37,7 +42,7 @@ jobs:
           KEY = os.environ['SUPABASE_SERVICE_KEY'].strip()
 
           if not KEY or KEY.startswith('sb_publishable_'):
-              raise SystemExit("ERROR: SUPABASE_SERVICE_KEY must be the Secret key (sb_secret_...) or legacy service_role key, NOT sb_publishable_.")
+              raise SystemExit("ERROR: SUPABASE_SERVICE_KEY must be the Secret key (sb_secret_...) or legacy service_role key.")
 
           HEADERS = {
               'apikey': KEY,
@@ -47,7 +52,7 @@ jobs:
           if KEY.startswith('eyJ'):
               HEADERS['Authorization'] = f'Bearer {KEY}'
 
-          def req(method, path, body=None, extra_headers=None):
+          def req(method, path, body=None, extra_headers=None, raw_response=False):
               h = dict(HEADERS)
               if extra_headers:
                   h.update(extra_headers)
@@ -58,6 +63,8 @@ jobs:
               try:
                   with urllib.request.urlopen(r) as resp:
                       raw = resp.read()
+                      if raw_response:
+                          return raw
                       return json.loads(raw.decode('utf-8')) if raw else {}
               except urllib.error.HTTPError as e:
                   err_body = e.read().decode('utf-8', errors='ignore')
@@ -99,11 +106,13 @@ jobs:
           except Exception as e:
               print("Trash purge warning:", e)
 
-          # ۳. بکاپ ماهانه کامل به صورت ZIP و ارسال لینک دانلود به ایمیل
+          # ۳. تهیه بکاپ (دیتابیس + در صورت انتخاب، تمام فایل‌های آپلودشده)
+          is_manual = os.environ.get('EVENT_NAME') == 'workflow_dispatch'
           should_backup = (
               os.environ.get('EVENT_CRON') == '0 6 1 * *'
-              or (os.environ.get('EVENT_NAME') == 'workflow_dispatch' and os.environ.get('MANUAL_BACKUP', 'true') == 'true')
+              or (is_manual and os.environ.get('MANUAL_BACKUP', 'true') == 'true')
           )
+          include_files = is_manual and os.environ.get('INCLUDE_FILES', 'false') == 'true'
 
           if should_backup:
               tables = [
@@ -115,13 +124,36 @@ jobs:
                   dump[tbl] = req('GET', f'/rest/v1/{tbl}?select=*')
 
               stamp = now.strftime('%Y-%m-%d_%H-%M')
+              suffix = 'full-with-files' if include_files else 'db-only'
               json_name = f"ha-tasks-backup-{stamp}.json"
-              zip_name = f"ha-tasks-backup-{stamp}.zip"
+              zip_name = f"ha-tasks-backup-{suffix}-{stamp}.zip"
 
               json_bytes = json.dumps(dump, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
               buf = io.BytesIO()
+              files_count = 0
+
               with zipfile.ZipFile(buf, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
                   zf.writestr(json_name, json_bytes)
+                  if include_files:
+                      used_names = set()
+                      for att in dump.get('task_attachments', []):
+                          fpath = att.get('file_path')
+                          fname = att.get('file_name') or 'file'
+                          tid = att.get('task_id') or 'unknown'
+                          if not fpath:
+                              continue
+                          try:
+                              encoded_path = urllib.parse.quote(fpath, safe='/')
+                              file_bytes = req('GET', f'/storage/v1/object/task-files/{encoded_path}', raw_response=True)
+                              arc_name = f"files/{tid}/{fname}"
+                              if arc_name in used_names:
+                                  arc_name = f"files/{tid}/{att.get('id', files_count)}_{fname}"
+                              used_names.add(arc_name)
+                              zf.writestr(arc_name, file_bytes)
+                              files_count += 1
+                          except Exception as fe:
+                              print(f"Skipped missing file {fpath}: {fe}")
+
               zip_bytes = buf.getvalue()
 
               req('POST', f'/storage/v1/object/backups/{zip_name}', zip_bytes, {
@@ -132,22 +164,27 @@ jobs:
               sign_res = req('POST', f'/storage/v1/object/sign/backups/{zip_name}', {'expiresIn': 1209600})
               download_url = f"{URL}/storage/v1{sign_res['signedURL']}"
 
+              size_mb = len(zip_bytes) / (1024 * 1024)
+              size_text = f"{size_mb:.2f} مگابایت" if size_mb >= 1 else f"{len(zip_bytes) / 1024:.1f} کیلوبایت"
+              mode_text = f"کامل (دیتابیس + {files_count} فایل ضمیمه)" if include_files else "فقط دیتابیس"
+
               msg = EmailMessage()
-              msg['Subject'] = f"بکاپ ماهانه فشرده (ZIP) دیتابیس H.A. Tasks ({now.strftime('%Y-%m-%d')})"
+              msg['Subject'] = f"بکاپ {mode_text} H.A. Tasks ({now.strftime('%Y-%m-%d')})"
               msg['From'] = os.environ['SMTP_EMAIL']
               msg['To'] = os.environ['BACKUP_TO_EMAIL']
               msg.set_content(
                   f"سلام،\n\n"
-                  f"نسخه پشتیبان کامل و فشرده دیتابیس H.A. Tasks آماده شد.\n"
-                  f"حجم فایل فشرده: {len(zip_bytes) / 1024:.1f} کیلوبایت\n\n"
+                  f"نسخه پشتیبان H.A. Tasks با موفقیت آماده شد.\n"
+                  f"نوع بکاپ: {mode_text}\n"
+                  f"حجم فایل فشرده: {size_text}\n\n"
                   f"لینک دانلود مستقیم فایل ZIP (معتبر به مدت ۱۴ روز):\n{download_url}\n\n"
                   f"نکات مهم:\n"
                   f"- این فایل پس از ۲ هفته به‌صورت خودکار از سرور پاک می‌شود تا فضایی اشغال نکند.\n"
-                  f"- در صورت نیاز به بازیابی، ابتدا فایل ZIP را از حالت فشرده خارج کنید و سپس فایل .json داخل آن را از طریق دکمه «بازیابی از فایل بکاپ» در برنامه انتخاب نمایید.\n"
+                  f"- برای بازیابی دیتابیس، فایل ZIP را از حالت فشرده خارج کنید و فایل .json داخل آن را در بخش «بازیابی از فایل بکاپ» برنامه انتخاب نمایید.\n"
               )
 
               with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
                   smtp.login(os.environ['SMTP_EMAIL'], os.environ['SMTP_APP_PASSWORD'])
                   smtp.send_message(msg)
-              print(f"Monthly ZIP backup created ({len(zip_bytes)} bytes) and emailed successfully.")
+              print(f"Backup ({mode_text}) created ({len(zip_bytes)} bytes) and emailed successfully.")
           EOF
