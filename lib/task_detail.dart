@@ -202,11 +202,47 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
     widget.onDeleted?.call();
   }
 
-  Future<void> _pickDueDate(JsonRow task) async {
+Future<void> _pickDueDate(JsonRow task) async {
     if (!widget.canEdit || task['is_completed'] == true) return;
     final initial = DateTime.tryParse(task['due_date'] ?? '') ?? DateTime.now();
     final picked = await pickAppDate(context, initialDate: initial);
     if (picked != null) {
+      final now = DateTime.now();
+      final todayStart = DateTime(now.year, now.month, now.day);
+      final pickedDay = DateTime(picked.year, picked.month, picked.day);
+
+      if (pickedDay.isBefore(todayStart) && mounted) {
+        final confirm = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: Row(
+              children: [
+                const Icon(Icons.warning_amber_rounded, color: Colors.orange),
+                const SizedBox(width: 8),
+                Text(tr('هشدار تاریخ گذشته', 'Past Date Warning')),
+              ],
+            ),
+            content: Text(
+              tr(
+                'تاریخ انتخاب‌شده (${formatAppDate(picked.toIso8601String())}) مربوط به گذشته است. آیا مطمئن هستید که می‌خواهید این تاریخ را ثبت کنید؟',
+                'The selected date (${formatAppDate(picked.toIso8601String())}) is in the past. Are you sure you want to set it?',
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text(tr('انصراف', 'Cancel')),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text(tr('بله، ثبت شود', 'Yes, Set Date')),
+              ),
+            ],
+          ),
+        );
+        if (confirm != true) return;
+      }
+
       await supabase
           .from('tasks')
           .update({'due_date': picked.toIso8601String()}).eq('id', task['id']);
