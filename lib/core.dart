@@ -50,6 +50,7 @@ class AppSettings extends ChangeNotifier {
   String lang = 'fa';
   bool isRtl = true;
   bool soundEnabled = true;
+  String sortBy = 'created';
 
   // فولدربندی و رنگ‌بندی شخصی (محلی روی دستگاه کاربر)
   List<String> personalFolders = [];
@@ -88,6 +89,7 @@ class AppSettings extends ChangeNotifier {
     lang = p.getString('cfg_lang') ?? 'fa';
     isRtl = p.getBool('cfg_rtl') ?? (lang == 'fa');
     soundEnabled = p.getBool('cfg_sound') ?? true;
+    sortBy = p.getString('cfg_sort_by') ?? 'created';
 
     personalFolders = p.getStringList('cfg_folders') ?? [];
     final folderMapStr = p.getString('cfg_list_folders');
@@ -141,6 +143,13 @@ class AppSettings extends ChangeNotifier {
     notifyListeners();
     final p = await SharedPreferences.getInstance();
     await p.setBool('cfg_sound', val);
+  }
+
+  Future<void> setSortBy(String val) async {
+    sortBy = val;
+    notifyListeners();
+    final p = await SharedPreferences.getInstance();
+    await p.setString('cfg_sort_by', val);
   }
 
   Future<void> addPersonalFolder(String name) async {
