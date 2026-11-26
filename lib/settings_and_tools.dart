@@ -465,6 +465,15 @@ class _UserSettingsDialogState extends State<UserSettingsDialog> {
             ),
           ),
           actions: [
+            TextButton.icon(
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              onPressed: () async {
+                await supabase.auth.signOut();
+                if (context.mounted) Navigator.pop(context);
+              },
+              icon: const Icon(Icons.logout_rounded, size: 18),
+              label: Text(tr('خروج از حساب', 'Sign Out')),
+            ),
             FilledButton(
               onPressed: () => Navigator.pop(context),
               child: Text(tr('بستن', 'Close')),
@@ -691,7 +700,6 @@ class _TodoImportDialogState extends State<TodoImportDialog> {
           }
         }
       } else {
-        // پشتیبانی از فایل CSV (ستون‌ها: List, Title, Completed, Notes)
         final lines = const LineSplitter().convert(content);
         for (int i = 1; i < lines.length; i++) {
           final cols = lines[i].split(',');
