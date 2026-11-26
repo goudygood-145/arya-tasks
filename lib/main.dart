@@ -1,13 +1,19 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:shamsi_date/shamsi_date.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 
-// ------------------------------------------------------------------
-// اطلاعات اتصال به Supabase را دقیقاً در این دو خط جایگزین کنید:
 const String supabaseUrl = 'https://kvkgyrifhqiukgjkojyx.supabase.co';
 const String supabaseAnonKey = 'sb_publishable_fClXOE3GkV3Gj8VeVTPMSQ_erzUihwc';
-// ------------------------------------------------------------------
+
+// سقف فضای رایگان فایل‌ها در Supabase برابر ۱ گیگابایت (۱۰۲۴ مگابایت) است
+const int storageQuotaBytes = 1024 * 1024 * 1024;
+// آستانه هشدار: وقتی ۱۰۰ مگابایت یا کمتر باقی مانده باشد
+const int lowStorageThresholdBytes = 100 * 1024 * 1024;
+// بازه یادآوری پاکسازی فایل‌های کارهای تیک‌خورده (هر ۷ روز یک‌بار)
+const int cleanupReminderDays = 7;
 
 typedef JsonRow = Map<String, dynamic>;
 
@@ -45,6 +51,53 @@ String formatShamsi(String? isoDate, {bool withTime = false}) {
   return toPersianDigits('$dateStr - $timeStr');
 }
 
+String formatBytes(int bytes) {
+  if (bytes < 1024) return '${toPersianDigits(bytes.toString())} بایت';
+  final kb = bytes / 1024;
+  if (kb < 1024) {
+    return '${toPersianDigits(kb.toStringAsFixed(1))} کیلوبایت';
+  }
+  final mb = kb / 1024;
+  return '${toPersianDigits(mb.toStringAsFixed(1))} مگابایت';
+}
+
+String buildSafeStoragePath(String taskId, String originalName) {
+  final dotIndex = originalName.lastIndexOf('.');
+  String ext = '';
+  if (dotIndex != -1 && dotIndex < originalName.length - 1) {
+    final rawExt = originalName.substring(dotIndex + 1).toLowerCase();
+    final cleanExt = rawExt.replaceAll(RegExp(r'[^a-z0-9]'), '');
+    if (cleanExt.isNotEmpty) ext = '.$cleanExt';
+  }
+  final ts = DateTime.now().millisecondsSinceEpoch;
+  return '$taskId/$ts$ext';
+}
+
+Future<int> fetchTotalStorageBytes() async {
+  try {
+    final res = await supabase.rpc('get_total_storage_bytes');
+    return (res as num?)?.toInt() ?? 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
+Future<void> deleteStorageFilesForTask(String taskId) async {
+  try {
+    final rows = await supabase
+        .from('task_attachments')
+        .select('file_path')
+        .eq('task_id', taskId);
+    final paths = rows
+        .map((r) => r['file_path'] as String?)
+        .whereType<String>()
+        .toList();
+    if (paths.isNotEmpty) {
+      await supabase.storage.from('task-files').remove(paths);
+    }
+  } catch (_) {}
+}
+
 class AryaTasksApp extends StatelessWidget {
   const AryaTasksApp({super.key});
 
@@ -52,6 +105,7 @@ class AryaTasksApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final baseTheme = ThemeData(
       useMaterial3: true,
+      fontFamily: 'Vazirmatn',
       colorScheme: ColorScheme.fromSeed(
         seedColor: const Color(0xFF1F6FEB),
         surface: const Color(0xFFF6F8FA),
@@ -61,9 +115,7 @@ class AryaTasksApp extends StatelessWidget {
     return MaterialApp(
       title: 'مدیریت کار تیمی',
       debugShowCheckedModeBanner: false,
-      theme: baseTheme.copyWith(
-        textTheme: GoogleFonts.vazirmatnTextTheme(baseTheme.textTheme),
-      ),
+      theme: baseTheme,
       builder: (context, child) {
         return Directionality(
           textDirection: TextDirection.rtl,
@@ -284,22 +336,229 @@ class _HomeScreenState extends State<HomeScreen> {
   String smartFilter = 'all';
   String? selectedTaskId;
   bool loadingLists = true;
+  int totalStorageUsedBytes = 0;
 
   final quickAddCtrl = TextEditingController();
 
   String get currentUserId => supabase.auth.currentUser!.id;
   String get currentUserEmail => supabase.auth.currentUser?.email ?? '';
 
+  bool get isStorageLow =>
+      (storageQuotaBytes - totalStorageUsedBytes) <= lowStorageThresholdBytes;
+
   @override
   void initState() {
     super.initState();
     _loadInitialData();
+    _refreshStorageAndCheckReminder(checkWeeklyPopup: true);
   }
 
   @override
   void dispose() {
     quickAddCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _refreshStorageAndCheckReminder({
+    bool checkWeeklyPopup = false,
+  }) async {
+    final used = await fetchTotalStorageBytes();
+    if (!mounted) return;
+    setState(() => totalStorageUsedBytes = used);
+
+    if (checkWeeklyPopup) {
+      await _maybeShowCompletedFilesReminder();
+    }
+  }
+
+  Future<void> _maybeShowCompletedFilesReminder() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final lastShown = prefs.getInt('last_cleanup_reminder_ms') ?? 0;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      const weekMs = cleanupReminderDays * 24 * 60 * 60 * 1000;
+
+      if (now - lastShown < weekMs) return;
+
+      final files = await _fetchCompletedTaskAttachments();
+      if (files.isEmpty || !mounted) return;
+
+      await _openCleanupDialog(files, markReminderSeen: true);
+    } catch (_) {}
+  }
+
+  Future<List<JsonRow>> _fetchCompletedTaskAttachments() async {
+    final data = await supabase
+        .from('task_attachments')
+        .select('id, file_name, file_path, file_size, tasks!inner(id, title, is_completed)')
+        .eq('tasks.is_completed', true)
+        .order('created_at', ascending: true);
+    return List<JsonRow>.from(data);
+  }
+
+  Future<void> _openCleanupDialog(
+    List<JsonRow> initialFiles, {
+    bool markReminderSeen = false,
+  }) async {
+    var files = List<JsonRow>.from(initialFiles);
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final totalBytes = files.fold<int>(
+            0,
+            (sum, f) => sum + ((f['file_size'] as num?)?.toInt() ?? 0),
+          );
+          final remaining = (storageQuotaBytes - totalStorageUsedBytes)
+              .clamp(0, storageQuotaBytes);
+
+          return AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.cleaning_services_rounded, color: Colors.orange),
+                SizedBox(width: 8),
+                Expanded(child: Text('مدیریت و پاکسازی فایل‌های اضافی')),
+              ],
+            ),
+            content: SizedBox(
+              width: 440,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: isStorageLow
+                          ? Colors.red.shade50
+                          : Colors.blue.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      'فضای مصرف‌شده کل شرکت: ${formatBytes(totalStorageUsedBytes)} از ۱ گیگابایت\n'
+                      'فضای باقی‌مانده: ${formatBytes(remaining)}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: isStorageLow
+                            ? Colors.red.shade900
+                            : Colors.blue.shade900,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  if (files.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 16),
+                      child: Text(
+                        'هیچ فایل ضمیمه‌ای روی کارهای انجام‌شده (تیک‌خورده) باقی نمانده است.',
+                      ),
+                    )
+                  else ...[
+                    Text(
+                      '${toPersianDigits(files.length.toString())} فایل (مجموعاً ${formatBytes(totalBytes)}) در کارهای تیک‌خورده وجود دارد. برای جلوگیری از پر شدن حجم سرور، فایل‌های غیرضروری را پاک کنید:',
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                    const SizedBox(height: 10),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 240),
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: files.length,
+                        itemBuilder: (_, i) {
+                          final f = files[i];
+                          final taskInfo = f['tasks'] as JsonRow?;
+                          final taskTitle = taskInfo?['title'] ?? '';
+                          final size = (f['file_size'] as num?)?.toInt() ?? 0;
+                          return ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: const Icon(Icons.attach_file, size: 18),
+                            title: Text(
+                              f['file_name'] as String,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: Text(
+                              'کار: $taskTitle • ${formatBytes(size)}',
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                            trailing: IconButton(
+                              tooltip: 'حذف فایل از سرور',
+                              icon: const Icon(
+                                Icons.delete_outline,
+                                color: Colors.red,
+                                size: 20,
+                              ),
+                              onPressed: () async {
+                                try {
+                                  await supabase.storage
+                                      .from('task-files')
+                                      .remove([f['file_path'] as String]);
+                                  await supabase
+                                      .from('task_attachments')
+                                      .delete()
+                                      .eq('id', f['id']);
+                                  files.removeAt(i);
+                                  await _refreshStorageAndCheckReminder();
+                                  setDialogState(() {});
+                                } catch (e) {
+                                  _showMsg('خطا در حذف فایل: $e');
+                                }
+                              },
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              if (files.isNotEmpty)
+                TextButton(
+                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                  onPressed: () async {
+                    try {
+                      final paths = files
+                          .map((f) => f['file_path'] as String)
+                          .toList();
+                      final ids = files.map((f) => f['id'] as String).toList();
+                      await supabase.storage.from('task-files').remove(paths);
+                      await supabase
+                          .from('task_attachments')
+                          .delete()
+                          .inFilter('id', ids);
+                      files.clear();
+                      await _refreshStorageAndCheckReminder();
+                      setDialogState(() {});
+                      _showMsg('تمام فایل‌های کارهای تیک‌خورده پاک شدند.');
+                    } catch (e) {
+                      _showMsg('خطا در پاکسازی: $e');
+                    }
+                  },
+                  child: const Text('حذف همه این فایل‌ها'),
+                ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text(markReminderSeen ? 'یادآوری در هفته بعد' : 'بستن'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    if (markReminderSeen) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(
+        'last_cleanup_reminder_ms',
+        DateTime.now().millisecondsSinceEpoch,
+      );
+    }
   }
 
   Future<void> _loadInitialData() async {
@@ -414,7 +673,7 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (ctx) => AlertDialog(
         title: const Text('حذف لیست'),
         content: Text(
-          'آیا از حذف لیست «${list['title']}» و تمام کارهای داخل آن مطمئن هستید؟',
+          'آیا از حذف لیست «${list['title']}» و تمام کارها و فایل‌های داخل آن مطمئن هستید؟',
         ),
         actions: [
           TextButton(
@@ -432,12 +691,22 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (confirm == true) {
       try {
+        // ابتدا تمام فایل‌های ضمیمه تسک‌های این لیست را از سرور پاک می‌کنیم
+        final listTasks = await supabase
+            .from('tasks')
+            .select('id')
+            .eq('list_id', list['id']);
+        for (final t in listTasks) {
+          await deleteStorageFilesForTask(t['id'] as String);
+        }
+
         await supabase.from('lists').delete().eq('id', list['id']);
         if (selectedListId == list['id']) {
           selectedListId = null;
           selectedTaskId = null;
         }
         await _loadInitialData();
+        await _refreshStorageAndCheckReminder();
       } catch (e) {
         _showMsg('فقط سازنده لیست می‌تواند آن را حذف کند.');
       }
@@ -662,7 +931,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   IconButton(
                     tooltip: 'به‌روزرسانی لیست‌ها',
                     icon: const Icon(Icons.refresh, color: Colors.white70),
-                    onPressed: _loadInitialData,
+                    onPressed: () {
+                      _loadInitialData();
+                      _refreshStorageAndCheckReminder();
+                    },
                   ),
                   IconButton(
                     tooltip: 'خروج از حساب',
@@ -787,10 +1059,46 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildTasksPane(bool isDesktop) {
+    final remaining = (storageQuotaBytes - totalStorageUsedBytes)
+        .clamp(0, storageQuotaBytes);
+
     return Container(
       color: const Color(0xFFE9EEF5),
       child: Column(
         children: [
+          if (isStorageLow)
+            Container(
+              width: double.infinity,
+              color: Colors.red.shade700,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded, color: Colors.white),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'هشدار کمبود فضا! فقط ${formatBytes(remaining)} از فضای فایل‌ها باقی مانده است.',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    style: TextButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: Colors.red.shade800,
+                    ),
+                    onPressed: () async {
+                      final files = await _fetchCompletedTaskAttachments();
+                      if (mounted) await _openCleanupDialog(files);
+                    },
+                    child: const Text('پاکسازی'),
+                  ),
+                ],
+              ),
+            ),
           if (selectedListId != null)
             Container(
               margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -999,7 +1307,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   body: TaskDetailPanel(
                     taskId: task['id'] as String,
                     profilesMap: profilesMap,
-                    onDeleted: () => Navigator.pop(context),
+                    onStorageChanged: _refreshStorageAndCheckReminder,
+                    onDeleted: () {
+                      _refreshStorageAndCheckReminder();
+                      Navigator.pop(context);
+                    },
                   ),
                 ),
               ),
@@ -1020,6 +1332,18 @@ class _HomeScreenState extends State<HomeScreen> {
         foregroundColor: Colors.white,
         title: Text(_getHeaderTitle()),
         actions: [
+          IconButton(
+            tooltip: 'مدیریت فضا و پاکسازی فایل‌های کارهای تیک‌خورده',
+            icon: Icon(
+              Icons.cleaning_services_outlined,
+              color: isStorageLow ? Colors.amberAccent : Colors.white,
+            ),
+            onPressed: () async {
+              await _refreshStorageAndCheckReminder();
+              final files = await _fetchCompletedTaskAttachments();
+              if (mounted) await _openCleanupDialog(files);
+            },
+          ),
           if (selectedListId != null)
             TextButton.icon(
               style: TextButton.styleFrom(foregroundColor: Colors.white),
@@ -1044,7 +1368,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 Expanded(flex: 3, child: _buildTasksPane(true)),
                 if (selectedTaskId != null)
                   Container(
-                    width: 390,
+                    width: 400,
                     decoration: BoxDecoration(
                       color: Colors.white,
                       border: Border(
@@ -1055,8 +1379,12 @@ class _HomeScreenState extends State<HomeScreen> {
                       key: ValueKey(selectedTaskId),
                       taskId: selectedTaskId!,
                       profilesMap: profilesMap,
+                      onStorageChanged: _refreshStorageAndCheckReminder,
                       onClose: () => setState(() => selectedTaskId = null),
-                      onDeleted: () => setState(() => selectedTaskId = null),
+                      onDeleted: () {
+                        _refreshStorageAndCheckReminder();
+                        setState(() => selectedTaskId = null);
+                      },
                     ),
                   ),
               ],
@@ -1071,6 +1399,7 @@ class TaskDetailPanel extends StatefulWidget {
   final Map<String, JsonRow> profilesMap;
   final VoidCallback? onClose;
   final VoidCallback? onDeleted;
+  final Future<void> Function()? onStorageChanged;
 
   const TaskDetailPanel({
     super.key,
@@ -1078,6 +1407,7 @@ class TaskDetailPanel extends StatefulWidget {
     required this.profilesMap,
     this.onClose,
     this.onDeleted,
+    this.onStorageChanged,
   });
 
   @override
@@ -1089,6 +1419,7 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
   final commentCtrl = TextEditingController();
   final notesCtrl = TextEditingController();
   bool notesInitialized = false;
+  bool uploadingFile = false;
   List<JsonRow> listMembers = [];
   String? loadedListId;
 
@@ -1131,6 +1462,107 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
     }
   }
 
+  Future<void> _deleteTaskAndFiles() async {
+    await deleteStorageFilesForTask(widget.taskId);
+    await supabase.from('tasks').delete().eq('id', widget.taskId);
+    widget.onDeleted?.call();
+  }
+
+  Future<void> _uploadAttachment() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.any,
+        withData: true,
+      );
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.single;
+      final bytes = file.bytes;
+      if (bytes == null) {
+        _showMsg('امکان خواندن فایل انتخاب‌شده وجود ندارد.');
+        return;
+      }
+
+      setState(() => uploadingFile = true);
+      final safePath = buildSafeStoragePath(widget.taskId, file.name);
+
+      await supabase.storage.from('task-files').uploadBinary(safePath, bytes);
+      await supabase.from('task_attachments').insert({
+        'task_id': widget.taskId,
+        'file_name': file.name,
+        'file_path': safePath,
+        'file_size': bytes.length,
+        'uploaded_by': supabase.auth.currentUser?.id,
+      });
+
+      await widget.onStorageChanged?.call();
+
+      // بررسی حجم باقی‌مانده: اگر ۱۰۰ مگابایت یا کمتر مانده باشد، برای همین فایل هشدار می‌دهد
+      final totalUsed = await fetchTotalStorageBytes();
+      final remaining =
+          (storageQuotaBytes - totalUsed).clamp(0, storageQuotaBytes);
+      if (remaining <= lowStorageThresholdBytes && mounted) {
+        await showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, color: Colors.red),
+                SizedBox(width: 8),
+                Text('هشدار پر شدن فضای سرور'),
+              ],
+            ),
+            content: Text(
+              'فایل «${file.name}» آپلود شد، اما فضای ذخیره‌سازی شرکت در حال پر شدن است!\n\n'
+              'حجم باقی‌مانده: فقط ${formatBytes(remaining)}\n'
+              'لطفاً فایل‌های اضافی در کارهای تیک‌خورده را پاک کنید تا این هشدار غیرفعال شود.',
+            ),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('متوجه شدم'),
+              ),
+            ],
+          ),
+        );
+      } else {
+        _showMsg('فایل «${file.name}» با موفقیت آپلود شد.');
+      }
+    } catch (e) {
+      _showMsg('خطا در آپلود فایل: $e');
+    } finally {
+      if (mounted) setState(() => uploadingFile = false);
+    }
+  }
+
+  Future<void> _openAttachment(JsonRow attachment) async {
+    try {
+      final signedUrl = await supabase.storage
+          .from('task-files')
+          .createSignedUrl(attachment['file_path'] as String, 3600);
+      final uri = Uri.parse(signedUrl);
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      _showMsg('خطا در باز کردن فایل: $e');
+    }
+  }
+
+  Future<void> _deleteAttachment(JsonRow attachment) async {
+    try {
+      await supabase.storage
+          .from('task-files')
+          .remove([attachment['file_path'] as String]);
+      await supabase
+          .from('task_attachments')
+          .delete()
+          .eq('id', attachment['id']);
+      await widget.onStorageChanged?.call();
+      _showMsg('فایل حذف شد و فضای آن آزاد گردید.');
+    } catch (e) {
+      _showMsg('خطا در حذف فایل: $e');
+    }
+  }
+
   Future<void> _addSubtask() async {
     final text = subtaskCtrl.text.trim();
     if (text.isEmpty) return;
@@ -1150,6 +1582,11 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
       'user_id': supabase.auth.currentUser!.id,
       'content': text,
     });
+  }
+
+  void _showMsg(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   @override
@@ -1191,15 +1628,9 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
                     ),
                     const Spacer(),
                     IconButton(
-                      tooltip: 'حذف کار',
+                      tooltip: 'حذف کار و فایل‌های ضمیمه',
                       icon: const Icon(Icons.delete_outline, color: Colors.red),
-                      onPressed: () async {
-                        await supabase
-                            .from('tasks')
-                            .delete()
-                            .eq('id', widget.taskId);
-                        widget.onDeleted?.call();
-                      },
+                      onPressed: _deleteTaskAndFiles,
                     ),
                     IconButton(
                       icon: const Icon(Icons.close),
@@ -1232,15 +1663,12 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
                       ),
                       if (widget.onClose == null)
                         IconButton(
-                          icon: const Icon(Icons.delete_outline,
-                              color: Colors.red),
-                          onPressed: () async {
-                            await supabase
-                                .from('tasks')
-                                .delete()
-                                .eq('id', widget.taskId);
-                            widget.onDeleted?.call();
-                          },
+                          tooltip: 'حذف کار و فایل‌های ضمیمه',
+                          icon: const Icon(
+                            Icons.delete_outline,
+                            color: Colors.red,
+                          ),
+                          onPressed: _deleteTaskAndFiles,
                         ),
                     ],
                   ),
@@ -1310,17 +1738,104 @@ class _TaskDetailPanelState extends State<TaskDetailPanel> {
                         onPressed: () async {
                           await supabase.from('tasks').update(
                               {'notes': notesCtrl.text}).eq('id', task['id']);
-                          if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                  content: Text('یادداشت ذخیره شد.')),
-                            );
-                          }
+                          _showMsg('یادداشت ذخیره شد.');
                         },
                       ),
                     ),
                   ),
                   const SizedBox(height: 18),
+                  // بخش فایل‌های ضمیمه
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'فایل‌های ضمیمه',
+                        style: TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      FilledButton.tonalIcon(
+                        onPressed: uploadingFile ? null : _uploadAttachment,
+                        icon: uploadingFile
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.upload_file_rounded, size: 18),
+                        label: Text(
+                          uploadingFile ? 'در حال آپلود...' : 'افزودن فایل',
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  StreamBuilder<List<JsonRow>>(
+                    stream: supabase
+                        .from('task_attachments')
+                        .stream(primaryKey: ['id'])
+                        .eq('task_id', widget.taskId)
+                        .order('created_at', ascending: true),
+                    builder: (context, attSnap) {
+                      final files = attSnap.data ?? [];
+                      if (files.isEmpty) {
+                        return const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 6),
+                          child: Text(
+                            'فایلی ضمیمه نشده است.',
+                            style:
+                                TextStyle(color: Colors.black45, fontSize: 12),
+                          ),
+                        );
+                      }
+                      return Column(
+                        children: files.map((f) {
+                          final size = (f['file_size'] as num?)?.toInt() ?? 0;
+                          return Card(
+                            elevation: 0,
+                            color: Colors.grey.shade100,
+                            margin: const EdgeInsets.only(bottom: 6),
+                            child: ListTile(
+                              dense: true,
+                              leading: const Icon(
+                                Icons.insert_drive_file_outlined,
+                                color: Color(0xFF1F6FEB),
+                              ),
+                              title: Text(
+                                f['file_name'] as String,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              subtitle: Text(
+                                formatBytes(size),
+                                style: const TextStyle(fontSize: 11),
+                              ),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    tooltip: 'دانلود / مشاهده',
+                                    icon: const Icon(
+                                      Icons.download_rounded,
+                                      size: 20,
+                                    ),
+                                    onPressed: () => _openAttachment(f),
+                                  ),
+                                  IconButton(
+                                    tooltip: 'حذف فایل',
+                                    icon: const Icon(
+                                      Icons.delete_outline,
+                                      color: Colors.red,
+                                      size: 20,
+                                    ),
+                                    onPressed: () => _deleteAttachment(f),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      );
+                    },
+                  ),
+                  const Divider(height: 24),
                   const Text(
                     'زیروظایف (چک‌لیست)',
                     style: TextStyle(fontWeight: FontWeight.bold),
