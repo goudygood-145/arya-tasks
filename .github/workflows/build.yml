@@ -107,7 +107,7 @@ jobs:
         run: |
           flutter create . --platforms=android
           git checkout -- pubspec.yaml lib/
-          sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"\/>\n    <application/' android/app/src/main/AndroidManifest.xml
+          sed -i 's/<application/<uses-permission android:name="android.permission.INTERNET"\/>\n    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"\/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"\/>\n    <application/' android/app/src/main/AndroidManifest.xml
           sed -i 's/android:label="[^"]*"/android:label="H.A. Tasks"/' android/app/src/main/AndroidManifest.xml
           mkdir -p assets/fonts
           curl -fL "https://raw.githubusercontent.com/rastikerdar/vazirmatn/v33.003/fonts/ttf/Vazirmatn-Regular.ttf" -o assets/fonts/Vazirmatn-Regular.ttf
