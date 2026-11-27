@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'core.dart';
@@ -286,13 +287,16 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   List<JsonRow> lists = [];
+  List<JsonRow> _allTasks = [];
+  List<JsonRow> _allSubtasks = [];
   Map<String, JsonRow> profilesMap = {};
   Map<String, String> myListRoles = {};
   List<JsonRow> currentListMembers = [];
 
   String? selectedListId;
+  String? quickAddTargetListId;
   // all, today, overdue, starred, assigned, planned
   String smartFilter = 'all';
   String? starredListFilterId;
@@ -301,14 +305,19 @@ class _HomeScreenState extends State<HomeScreen> {
   bool showSearch = false;
   String get sortBy => appSettings.sortBy;
 
+  // انتخاب چندتایی و ترتیب دستی
+  bool selectionMode = false;
+  final Set<String> selectedTaskIds = {};
+  List<String> _manualOrderIds = [];
+
   bool loadingLists = true;
   int totalStorageUsedBytes = 0;
 
   final quickAddCtrl = TextEditingController();
   final searchCtrl = TextEditingController();
   StreamSubscription? _sessionSub;
-  late final Stream<List<JsonRow>> _tasksStream;
-  late final Stream<List<JsonRow>> _subtasksStream;
+  StreamSubscription? _tasksSub;
+  StreamSubscription? _subtasksSub;
   late final Stream<List<JsonRow>> _notificationsStream;
 
   String get currentUserId => supabase.auth.currentUser!.id;
@@ -331,38 +340,83 @@ class _HomeScreenState extends State<HomeScreen> {
     return myListRoles[listId] == 'owner';
   }
 
-void _onSettingsChanged() {
+  void _onSettingsChanged() {
     if (mounted) setState(() {});
   }
 
   @override
   void initState() {
     super.initState();
-    _tasksStream = supabase
-        .from('tasks')
-        .stream(primaryKey: ['id'])
-        .order('created_at', ascending: false);
-    _subtasksStream = supabase.from('subtasks').stream(primaryKey: ['id']);
+    WidgetsBinding.instance.addObserver(this);
     _notificationsStream = supabase
         .from('notifications')
         .stream(primaryKey: ['id'])
         .eq('user_id', currentUserId);
+    _tasksSub = supabase
+        .from('tasks')
+        .stream(primaryKey: ['id'])
+        .order('created_at', ascending: false)
+        .listen((rows) {
+      if (mounted) {
+        setState(() => _allTasks = List<JsonRow>.from(rows));
+      }
+    });
+    _subtasksSub = supabase.from('subtasks').stream(primaryKey: ['id']).listen((rows) {
+      if (mounted) {
+        setState(() => _allSubtasks = List<JsonRow>.from(rows));
+      }
+    });
     appSettings.addListener(_onSettingsChanged);
+    _loadManualOrder();
     _initSessionWatch();
     _loadInitialData();
+    _refreshTasks();
     _refreshStorage();
+    _checkAndroidPermissions();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       checkForAndroidUpdate(context);
     });
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkAndroidPermissions();
+      _refreshTasks();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     appSettings.removeListener(_onSettingsChanged);
     _sessionSub?.cancel();
+    _tasksSub?.cancel();
+    _subtasksSub?.cancel();
     quickAddCtrl.dispose();
     searchCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _checkAndroidPermissions() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return;
+    try {
+      final status = await Permission.notification.status;
+      if (status.isDenied || status.isPermanentlyDenied) {
+        await Permission.notification.request();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _loadManualOrder() async {
+    final p = await SharedPreferences.getInstance();
+    final saved = p.getStringList('manual_task_order_ids') ?? [];
+    if (mounted) setState(() => _manualOrderIds = saved);
+  }
+
+  Future<void> _saveManualOrder() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setStringList('manual_task_order_ids', _manualOrderIds);
   }
 
   Future<void> _initSessionWatch() async {
@@ -384,6 +438,22 @@ void _onSettingsChanged() {
   Future<void> _refreshStorage() async {
     final used = await fetchTotalStorageBytes();
     if (mounted) setState(() => totalStorageUsedBytes = used);
+  }
+
+  Future<void> _refreshTasks() async {
+    try {
+      final tData = await supabase
+          .from('tasks')
+          .select()
+          .order('created_at', ascending: false);
+      final sData = await supabase.from('subtasks').select();
+      if (mounted) {
+        setState(() {
+          _allTasks = List<JsonRow>.from(tData);
+          _allSubtasks = List<JsonRow>.from(sData);
+        });
+      }
+    } catch (_) {}
   }
 
   Future<void> _loadInitialData() async {
@@ -419,12 +489,17 @@ void _onSettingsChanged() {
         profilesMap = map;
         myListRoles = roleMap;
         lists = List<JsonRow>.from(listData);
+        if (quickAddTargetListId != null &&
+            !lists.any((l) => l['id'] == quickAddTargetListId)) {
+          quickAddTargetListId = null;
+        }
         loadingLists = false;
       });
 
       if (selectedListId != null) {
         await _loadMembers(selectedListId!);
       }
+      await _refreshTasks();
     } catch (e) {
       if (mounted) {
         setState(() => loadingLists = false);
@@ -452,8 +527,203 @@ void _onSettingsChanged() {
       starredListFilterId = null;
       selectedTaskId = null;
       currentListMembers = [];
+      selectionMode = false;
+      selectedTaskIds.clear();
     });
     if (listId != null) _loadMembers(listId);
+  }
+
+  void _toggleTaskSelection(String taskId) {
+    setState(() {
+      if (selectedTaskIds.contains(taskId)) {
+        selectedTaskIds.remove(taskId);
+        if (selectedTaskIds.isEmpty) selectionMode = false;
+      } else {
+        selectionMode = true;
+        selectedTaskIds.add(taskId);
+      }
+    });
+  }
+
+  void _exitSelectionMode() {
+    setState(() {
+      selectionMode = false;
+      selectedTaskIds.clear();
+    });
+  }
+
+  Future<void> _bulkMoveTasks() async {
+    if (selectedTaskIds.isEmpty) return;
+    final editableLists =
+        lists.where((l) => _canEditList(l['id'] as String)).toList();
+    String? targetId =
+        editableLists.isNotEmpty ? editableLists.first['id'] as String : null;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          title: Text(tr(
+            'انتقال ${toPersianDigits(selectedTaskIds.length.toString())} کار انتخاب‌شده',
+            'Move ${selectedTaskIds.length} Selected Tasks',
+          )),
+          content: DropdownButtonFormField<String?>(
+            value: targetId,
+            isExpanded: true,
+            items: [
+              DropdownMenuItem<String?>(
+                value: null,
+                child: Text(tr('بدون لیست (فقط همه کارها)', 'No List (All Tasks)')),
+              ),
+              ...editableLists.map((l) => DropdownMenuItem<String?>(
+                    value: l['id'] as String,
+                    child: Text(l['title'] as String),
+                  )),
+            ],
+            onChanged: (v) => setD(() => targetId = v),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text(tr('انصراف', 'Cancel'))),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text(tr('انتقال', 'Move'))),
+          ],
+        ),
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await supabase
+          .from('tasks')
+          .update({'list_id': targetId})
+          .inFilter('id', selectedTaskIds.toList());
+      _exitSelectionMode();
+      await _refreshTasks();
+      _showMsg(tr('کارهای انتخاب‌شده منتقل شدند.', 'Selected tasks moved.'));
+    } catch (e) {
+      _showMsg('$e');
+    }
+  }
+
+  Future<void> _bulkDeleteTasks() async {
+    if (selectedTaskIds.isEmpty) return;
+    final count = selectedTaskIds.length;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(tr('حذف گروهی کارها', 'Delete Selected Tasks')),
+        content: Text(
+          tr(
+            '${toPersianDigits(count.toString())} کار انتخاب‌شده به سطل زباله منتقل شوند؟',
+            'Move $count selected tasks to Trash?',
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(tr('انصراف', 'Cancel'))),
+          FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(tr('حذف همه', 'Delete All'))),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      final ids = selectedTaskIds.toList();
+      await supabase.from('tasks').update({
+        'deleted_at': DateTime.now().toUtc().toIso8601String(),
+        'deleted_by': currentUserId,
+      }).inFilter('id', ids);
+      if (selectedTaskId != null && ids.contains(selectedTaskId)) {
+        selectedTaskId = null;
+      }
+      _exitSelectionMode();
+      await _refreshTasks();
+      _showMsg(tr('کارهای انتخاب‌شده به سطل زباله منتقل شدند.', 'Moved to Trash.'));
+    } catch (e) {
+      _showMsg('$e');
+    }
+  }
+
+  // افزودن سریع کار از طریق پنجره (برای صفحه اصلی و گوشی)
+  Future<void> _showQuickAddTaskDialog() async {
+    final titleCtrl = TextEditingController();
+    final editableLists =
+        lists.where((l) => _canEditList(l['id'] as String)).toList();
+    String? targetList = selectedListId ??
+        (editableLists.isNotEmpty ? editableLists.first['id'] as String : null);
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setD) => AlertDialog(
+          title: Text(tr('افزودن کار جدید', 'New Task')),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: titleCtrl,
+                autofocus: true,
+                onSubmitted: (_) async {
+                  final t = titleCtrl.text.trim();
+                  if (t.isEmpty) return;
+                  Navigator.pop(ctx);
+                  await _addTask(
+                      overrideTitle: t,
+                      overrideListId: targetList,
+                      useOverrideList: true);
+                },
+                decoration: InputDecoration(
+                  labelText: tr('عنوان کار', 'Task title'),
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String?>(
+                value: targetList,
+                isExpanded: true,
+                decoration: InputDecoration(
+                  labelText: tr('انتخاب لیست', 'Select list'),
+                  border: const OutlineInputBorder(),
+                ),
+                items: [
+                  DropdownMenuItem<String?>(
+                    value: null,
+                    child: Text(tr('بدون لیست (فقط همه کارها)', 'No list (All Tasks)')),
+                  ),
+                  ...editableLists.map((l) => DropdownMenuItem<String?>(
+                        value: l['id'] as String,
+                        child: Text((l['title'] ?? '').toString()),
+                      )),
+                ],
+                onChanged: (v) => setD(() => targetList = v),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text(tr('انصراف', 'Cancel')),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final t = titleCtrl.text.trim();
+                if (t.isEmpty) return;
+                Navigator.pop(ctx);
+                await _addTask(
+                    overrideTitle: t,
+                    overrideListId: targetList,
+                    useOverrideList: true);
+              },
+              child: Text(tr('ثبت', 'Add')),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   // ساخت لیست جدید (پشتیبانی از کلید Enter)
@@ -919,6 +1189,14 @@ void _onSettingsChanged() {
       position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx + 1, pos.dy + 1),
       items: [
         PopupMenuItem(
+          value: 'select',
+          child: ListTile(
+            dense: true,
+            leading: const Icon(Icons.checklist_rtl_rounded),
+            title: Text(tr('انتخاب چندتایی', 'Select Multiple')),
+          ),
+        ),
+        PopupMenuItem(
           value: 'move',
           child: ListTile(
             dense: true,
@@ -946,7 +1224,9 @@ void _onSettingsChanged() {
       ],
     );
 
-    if (selected == 'copy') {
+    if (selected == 'select') {
+      _toggleTaskSelection(task['id'] as String);
+    } else if (selected == 'copy') {
       await supabase.from('tasks').insert({
         'list_id': task['list_id'],
         'title': '${task['title']} (کپی)',
@@ -956,26 +1236,34 @@ void _onSettingsChanged() {
         'created_by': currentUserId,
         'created_by_name': currentUserName,
       });
+      await _refreshTasks();
       _showMsg(tr('کار کپی شد.', 'Task duplicated.'));
     } else if (selected == 'move') {
       final editableLists =
           lists.where((l) => _canEditList(l['id'] as String)).toList();
-      if (editableLists.isEmpty || !mounted) return;
-      String targetId = editableLists.first['id'] as String;
+      if (!mounted) return;
+      String? targetId = editableLists.isNotEmpty
+          ? editableLists.first['id'] as String
+          : null;
       final ok = await showDialog<bool>(
         context: context,
         builder: (ctx) => StatefulBuilder(
           builder: (ctx, setD) => AlertDialog(
             title: Text(tr('انتقال کار به لیست دیگر', 'Move Task')),
-            content: DropdownButtonFormField<String>(
+            content: DropdownButtonFormField<String?>(
               value: targetId,
-              items: editableLists
-                  .map((l) => DropdownMenuItem(
-                        value: l['id'] as String,
-                        child: Text(l['title'] as String),
-                      ))
-                  .toList(),
-              onChanged: (v) => setD(() => targetId = v!),
+              isExpanded: true,
+              items: [
+                DropdownMenuItem<String?>(
+                  value: null,
+                  child: Text(tr('بدون لیست (فقط همه کارها)', 'No List (All Tasks)')),
+                ),
+                ...editableLists.map((l) => DropdownMenuItem<String?>(
+                      value: l['id'] as String,
+                      child: Text(l['title'] as String),
+                    )),
+              ],
+              onChanged: (v) => setD(() => targetId = v),
             ),
             actions: [
               TextButton(
@@ -992,6 +1280,7 @@ void _onSettingsChanged() {
         await supabase
             .from('tasks')
             .update({'list_id': targetId}).eq('id', task['id']);
+        await _refreshTasks();
         _showMsg(tr('کار منتقل شد.', 'Task moved.'));
       }
     } else if (selected == 'delete') {
@@ -1021,7 +1310,8 @@ void _onSettingsChanged() {
           'deleted_at': DateTime.now().toUtc().toIso8601String(),
           'deleted_by': currentUserId,
         }).eq('id', task['id']);
-        if (selectedTaskId == task['id']) setState(() => selectedTaskId = null);
+        if (selectedTaskId == task['id']) selectedTaskId = null;
+        await _refreshTasks();
       }
     }
   }
@@ -1175,8 +1465,7 @@ void _onSettingsChanged() {
           children: [
             const Icon(Icons.notifications_active_outlined),
             const SizedBox(width: 8),
-            Text(tr('اعلان‌ها و منشن‌ها', 'Notifications')),
-            const Spacer(),
+            Expanded(child: Text(tr('اعلان‌ها و منشن‌ها', 'Notifications'))),
             TextButton(
               onPressed: () async {
                 await supabase
@@ -1247,21 +1536,38 @@ void _onSettingsChanged() {
     );
   }
 
-  Future<void> _addTask() async {
-    final title = quickAddCtrl.text.trim();
-    if (title.isEmpty || selectedListId == null) return;
-    if (!_canEditList(selectedListId)) {
+  Future<void> _addTask({
+    String? overrideTitle,
+    String? overrideListId,
+    bool useOverrideList = false,
+  }) async {
+    final title = (overrideTitle ?? quickAddCtrl.text).trim();
+    if (title.isEmpty) return;
+    final targetListId = useOverrideList
+        ? overrideListId
+        : (selectedListId ?? quickAddTargetListId);
+    if (targetListId != null && !_canEditList(targetListId)) {
       _showMsg(tr('دسترسی شما در این لیست فقط خواندنی است.', 'View-only access.'));
       return;
     }
-    quickAddCtrl.clear();
+    if (overrideTitle == null) quickAddCtrl.clear();
     try {
-      await supabase.from('tasks').insert({
-        'list_id': selectedListId,
+      final now = DateTime.now();
+      final payload = <String, dynamic>{
+        'list_id': targetListId,
         'title': title,
         'created_by': currentUserId,
         'created_by_name': currentUserName,
-      });
+      };
+      if (selectedListId == null && smartFilter == 'today') {
+        payload['due_date'] =
+            DateTime.utc(now.year, now.month, now.day, 12).toIso8601String();
+      }
+      if (selectedListId == null && smartFilter == 'starred') {
+        payload['is_starred'] = true;
+      }
+      await supabase.from('tasks').insert(payload);
+      await _refreshTasks();
     } catch (e) {
       _showMsg('$e');
     }
@@ -1304,6 +1610,87 @@ void _onSettingsChanged() {
     return dt.isBefore(todayStart);
   }
 
+  List<JsonRow> _getFilteredTasks(
+    List<JsonRow> allActiveTasks,
+    Map<String, List<JsonRow>> subtasksByTask,
+  ) {
+    var filtered = allActiveTasks.where((t) {
+      if (selectedListId != null) return t['list_id'] == selectedListId;
+      if (smartFilter == 'starred') {
+        if (t['is_starred'] != true) return false;
+        if (starredListFilterId != null &&
+            t['list_id'] != starredListFilterId) {
+          return false;
+        }
+        return true;
+      }
+      if (smartFilter == 'today') {
+        final d = DateTime.tryParse((t['due_date'] as String?) ?? '')?.toLocal();
+        return d != null && _isToday(d);
+      }
+      if (smartFilter == 'overdue') {
+        final d = DateTime.tryParse((t['due_date'] as String?) ?? '')?.toLocal();
+        return t['is_completed'] != true && d != null && _isOverdue(d);
+      }
+      if (smartFilter == 'assigned') {
+        if (t['assigned_to'] == currentUserId) return true;
+        final subs = subtasksByTask[t['id']] ?? [];
+        return subs.any((s) => s['assigned_to'] == currentUserId);
+      }
+      if (smartFilter == 'planned') {
+        return (t['due_date'] as String?) != null;
+      }
+      return true;
+    }).toList();
+
+    if (searchQuery.trim().isNotEmpty) {
+      final q = searchQuery.trim().toLowerCase();
+      filtered = filtered.where((t) {
+        final title = (t['title'] ?? '').toString().toLowerCase();
+        final notes = (t['notes'] ?? '').toString().toLowerCase();
+        final tags = ((t['tags'] as List?) ?? []).join(' ').toLowerCase();
+        return title.contains(q) || notes.contains(q) || tags.contains(q);
+      }).toList();
+    }
+
+    int prioWeight(String? p) => p == 'urgent' ? 0 : (p == 'medium' ? 1 : 2);
+    filtered.sort((a, b) {
+      if (sortBy == 'manual') {
+        final ia = _manualOrderIds.indexOf(a['id'] as String);
+        final ib = _manualOrderIds.indexOf(b['id'] as String);
+        if (ia != -1 && ib != -1) return ia.compareTo(ib);
+        if (ia != -1) return -1;
+        if (ib != -1) return 1;
+        return ((b['created_at'] as String?) ?? '')
+            .compareTo((a['created_at'] as String?) ?? '');
+      }
+      if (sortBy == 'due') {
+        final da = (a['due_date'] as String?) ?? '9999';
+        final db = (b['due_date'] as String?) ?? '9999';
+        return da.compareTo(db);
+      }
+      if (sortBy == 'priority') {
+        final sa = a['is_starred'] == true ? 0 : 1;
+        final sb = b['is_starred'] == true ? 0 : 1;
+        if (sa != sb) return sa.compareTo(sb);
+        final pa = prioWeight(a['priority'] as String?);
+        final pb = prioWeight(b['priority'] as String?);
+        if (pa != pb) return pa.compareTo(pb);
+        return ((b['created_at'] as String?) ?? '')
+            .compareTo((a['created_at'] as String?) ?? '');
+      }
+      if (sortBy == 'starred') {
+        final sa = a['is_starred'] == true ? 0 : 1;
+        final sb = b['is_starred'] == true ? 0 : 1;
+        return sa.compareTo(sb);
+      }
+      return ((b['created_at'] as String?) ?? '')
+          .compareTo((a['created_at'] as String?) ?? '');
+    });
+
+    return filtered;
+  }
+
   Widget _buildSidebar(
     List<JsonRow> allActiveTasks,
     Map<String, List<JsonRow>> subtasksByTask, {
@@ -1335,60 +1722,83 @@ void _onSettingsChanged() {
     Widget buildListRow(JsonRow list) {
       final lid = list['id'] as String;
       final isSel = selectedListId == lid;
-      final openInList =
-          openTasks.where((t) => t['list_id'] == lid).length;
+      final openInList = openTasks.where((t) => t['list_id'] == lid).length;
       final customColorVal = appSettings.listColors[lid];
-      final iconColor = customColorVal != null
-          ? Color(customColorVal)
-          : cs.primary;
+      final iconColor =
+          customColorVal != null ? Color(customColorVal) : cs.primary;
 
-      return GestureDetector(
-        onSecondaryTapDown: (d) =>
-            _showListContextMenu(d.globalPosition, list, allActiveTasks),
-        child: Container(
-          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-          decoration: BoxDecoration(
-            color: isSel ? cs.primaryContainer : Colors.transparent,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: ListTile(
-            dense: true,
-            leading: Icon(Icons.list_alt_rounded, color: iconColor, size: 20),
-            title: Text(
-              list['title'] as String,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: isSel ? cs.onPrimaryContainer : cs.onSurface,
-                fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+      return DragTarget<JsonRow>(
+        onWillAcceptWithDetails: (details) =>
+            _canEditList(lid) && details.data['list_id'] != lid,
+        onAcceptWithDetails: (details) async {
+          final task = details.data;
+          await supabase
+              .from('tasks')
+              .update({'list_id': lid}).eq('id', task['id']);
+          await _refreshTasks();
+          _showMsg(tr(
+            'کار «${task['title']}» به لیست «${list['title']}» منتقل شد.',
+            'Moved "${task['title']}" to "${list['title']}".',
+          ));
+        },
+        builder: (context, candidateData, rejectedData) {
+          final isHovering = candidateData.isNotEmpty;
+          return GestureDetector(
+            onSecondaryTapDown: (d) =>
+                _showListContextMenu(d.globalPosition, list, allActiveTasks),
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: isHovering
+                    ? cs.primary.withAlpha(45)
+                    : (isSel ? cs.primaryContainer : Colors.transparent),
+                borderRadius: BorderRadius.circular(10),
+                border: isHovering
+                    ? Border.all(color: cs.primary, width: 1.5)
+                    : null,
+              ),
+              child: ListTile(
+                dense: true,
+                leading:
+                    Icon(Icons.list_alt_rounded, color: iconColor, size: 20),
+                title: Text(
+                  list['title'] as String,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: isSel ? cs.onPrimaryContainer : cs.onSurface,
+                    fontWeight: isSel ? FontWeight.bold : FontWeight.normal,
+                  ),
+                ),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (openInList > 0)
+                      Text(
+                        toPersianDigits(openInList.toString()),
+                        style:
+                            TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+                      ),
+                    IconButton(
+                      icon: Icon(Icons.more_vert,
+                          size: 16, color: cs.onSurfaceVariant),
+                      onPressed: () {
+                        final box = context.findRenderObject() as RenderBox?;
+                        final pos = box != null
+                            ? box.localToGlobal(const Offset(120, 260))
+                            : const Offset(120, 260);
+                        _showListContextMenu(pos, list, allActiveTasks);
+                      },
+                    ),
+                  ],
+                ),
+                onTap: () {
+                  _selectList(lid);
+                  if (closeDrawerOnTap) Navigator.pop(context);
+                },
               ),
             ),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (openInList > 0)
-                  Text(
-                    toPersianDigits(openInList.toString()),
-                    style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
-                  ),
-                IconButton(
-                  icon: Icon(Icons.more_vert,
-                      size: 16, color: cs.onSurfaceVariant),
-                  onPressed: () {
-                    final box = context.findRenderObject() as RenderBox?;
-                    final pos = box != null
-                        ? box.localToGlobal(const Offset(120, 260))
-                        : const Offset(120, 260);
-                    _showListContextMenu(pos, list, allActiveTasks);
-                  },
-                ),
-              ],
-            ),
-            onTap: () {
-              _selectList(lid);
-              if (closeDrawerOnTap) Navigator.pop(context);
-            },
-          ),
-        ),
+          );
+        },
       );
     }
 
@@ -1402,7 +1812,6 @@ void _onSettingsChanged() {
       child: SafeArea(
         child: Column(
           children: [
-            // هدر پروفایل قابل کلیک برای باز کردن منوی تنظیمات
             InkWell(
               onTap: () {
                 showDialog(
@@ -1446,7 +1855,6 @@ void _onSettingsChanged() {
               ),
             ),
             const SizedBox(height: 6),
-            // همه کارها با آمار کامل
             _smartTile(
               icon: Icons.inbox_rounded,
               color: cs.primary,
@@ -1536,7 +1944,6 @@ void _onSettingsChanged() {
               },
             ),
             const Divider(height: 16),
-            // فولدرهای شخصی و لیست‌ها
             Expanded(
               child: loadingLists
                   ? const Center(child: CircularProgressIndicator())
@@ -1567,7 +1974,6 @@ void _onSettingsChanged() {
                       ],
                     ),
             ),
-// دکمه‌های ساخت لیست و فولدر شخصی کنار هم
             const Divider(height: 1),
             Padding(
               padding: const EdgeInsets.all(10),
@@ -1679,7 +2085,7 @@ void _onSettingsChanged() {
 
   Widget _buildTasksPane(
     bool isDesktop,
-    List<JsonRow> allActiveTasks,
+    List<JsonRow> filtered,
     Map<String, List<JsonRow>> subtasksByTask,
     List<String> allTags,
   ) {
@@ -1689,75 +2095,15 @@ void _onSettingsChanged() {
     final listTitleMap = {
       for (final l in lists) l['id'] as String: l['title'] as String
     };
-
-    var filtered = allActiveTasks.where((t) {
-      if (selectedListId != null) return t['list_id'] == selectedListId;
-      if (smartFilter == 'starred') {
-        if (t['is_starred'] != true) return false;
-        if (starredListFilterId != null &&
-            t['list_id'] != starredListFilterId) {
-          return false;
-        }
-        return true;
-      }
-      if (smartFilter == 'today') {
-        final d = DateTime.tryParse((t['due_date'] as String?) ?? '')?.toLocal();
-        return d != null && _isToday(d);
-      }
-      if (smartFilter == 'overdue') {
-        final d = DateTime.tryParse((t['due_date'] as String?) ?? '')?.toLocal();
-        return t['is_completed'] != true && d != null && _isOverdue(d);
-      }
-      if (smartFilter == 'assigned') {
-        if (t['assigned_to'] == currentUserId) return true;
-        final subs = subtasksByTask[t['id']] ?? [];
-        return subs.any((s) => s['assigned_to'] == currentUserId);
-      }
-      if (smartFilter == 'planned') {
-        return (t['due_date'] as String?) != null;
-      }
-      return true;
-    }).toList();
-
-    if (searchQuery.trim().isNotEmpty) {
-      final q = searchQuery.trim().toLowerCase();
-      filtered = filtered.where((t) {
-        final title = (t['title'] ?? '').toString().toLowerCase();
-        final notes = (t['notes'] ?? '').toString().toLowerCase();
-        final tags = ((t['tags'] as List?) ?? []).join(' ').toLowerCase();
-        return title.contains(q) || notes.contains(q) || tags.contains(q);
-      }).toList();
-    }
-
-    int prioWeight(String? p) => p == 'urgent' ? 0 : (p == 'medium' ? 1 : 2);
-    filtered.sort((a, b) {
-      if (sortBy == 'due') {
-        final da = (a['due_date'] as String?) ?? '9999';
-        final db = (b['due_date'] as String?) ?? '9999';
-        return da.compareTo(db);
-      }
-      if (sortBy == 'priority') {
-        final sa = a['is_starred'] == true ? 0 : 1;
-        final sb = b['is_starred'] == true ? 0 : 1;
-        if (sa != sb) return sa.compareTo(sb);
-        final pa = prioWeight(a['priority'] as String?);
-        final pb = prioWeight(b['priority'] as String?);
-        if (pa != pb) return pa.compareTo(pb);
-        return ((b['created_at'] as String?) ?? '')
-            .compareTo((a['created_at'] as String?) ?? '');
-      }
-      if (sortBy == 'starred') {
-        final sa = a['is_starred'] == true ? 0 : 1;
-        final sb = b['is_starred'] == true ? 0 : 1;
-        return sa.compareTo(sb);
-      }
-      return ((b['created_at'] as String?) ?? '')
-          .compareTo((a['created_at'] as String?) ?? '');
-    });
+    final editableLists =
+        lists.where((l) => _canEditList(l['id'] as String)).toList();
 
     final activeTasks =
         filtered.where((t) => t['is_completed'] != true).toList();
     final doneTasks = filtered.where((t) => t['is_completed'] == true).toList();
+
+    final canAddHere =
+        selectedListId == null || _canEditList(selectedListId);
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -1767,129 +2113,223 @@ void _onSettingsChanged() {
         }
       },
       child: Container(
-      color: cs.surfaceContainerLow,
-      child: Column(
-        children: [
-          if (isStorageLow)
-            Container(
-              width: double.infinity,
-              color: Colors.red.shade700,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Row(
-                children: [
-                  const Icon(Icons.warning_amber_rounded, color: Colors.white),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      tr(
-                        'هشدار کمبود فضا: فقط ${formatBytes(remaining)} باقی مانده است. از کلیک راست روی لیست‌ها، فایل‌های کارهای تیک‌خورده را پاکسازی کنید.',
-                        'Low storage: ${formatBytes(remaining)} left.',
-                      ),
-                      style: const TextStyle(color: Colors.white, fontSize: 12),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          if (selectedListId == null && smartFilter == 'starred')
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-              child: Row(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(left: 6),
-                    child: FilterChip(
-                      label: Text(tr('همه لیست‌ها', 'All Lists')),
-                      selected: starredListFilterId == null,
-                      onSelected: (_) =>
-                          setState(() => starredListFilterId = null),
-                    ),
-                  ),
-                  ...lists.map((l) => Padding(
-                        padding: const EdgeInsets.only(left: 6),
-                        child: FilterChip(
-                          label: Text(l['title'] as String),
-                          selected: starredListFilterId == l['id'],
-                          onSelected: (_) => setState(() =>
-                              starredListFilterId = l['id'] as String),
+        color: cs.surfaceContainerLow,
+        child: Column(
+          children: [
+            if (isStorageLow)
+              Container(
+                width: double.infinity,
+                color: Colors.red.shade700,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    const Icon(Icons.warning_amber_rounded,
+                        color: Colors.white),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        tr(
+                          'هشدار کمبود فضا: فقط ${formatBytes(remaining)} باقی مانده است. از کلیک راست روی لیست‌ها، فایل‌های کارهای تیک‌خورده را پاکسازی کنید.',
+                          'Low storage: ${formatBytes(remaining)} left.',
                         ),
-                      )),
-                ],
-              ),
-            ),
-          if (selectedListId != null && _canEditList(selectedListId))
-            Container(
-              margin: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-              decoration: BoxDecoration(
-                color: cs.surface,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: cs.outlineVariant),
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.add, color: cs.primary),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: TextField(
-                      controller: quickAddCtrl,
-                      onSubmitted: (_) => _addTask(),
-                      decoration: InputDecoration(
-                        hintText: tr('افزودن کار جدید و فشردن Enter...', 'Add a task + Enter...'),
-                        border: InputBorder.none,
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 12),
                       ),
                     ),
-                  ),
-                  FilledButton(
-                    onPressed: _addTask,
-                    child: Text(tr('ثبت', 'Add')),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-          Expanded(
-            child: filtered.isEmpty
-                ? Center(
-                    child: Text(
-                      tr('هیچ کاری در این بخش وجود ندارد.', 'No tasks here.'),
-                      style: TextStyle(color: cs.onSurfaceVariant),
+            if (selectedListId == null && smartFilter == 'starred')
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                child: Row(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(left: 6),
+                      child: FilterChip(
+                        label: Text(tr('همه لیست‌ها', 'All Lists')),
+                        selected: starredListFilterId == null,
+                        onSelected: (_) =>
+                            setState(() => starredListFilterId = null),
+                      ),
                     ),
-                  )
-                : ListView(
-                    padding: const EdgeInsets.all(16),
-                    children: [
-                      ...activeTasks.map((t) => _taskCard(
-                            t,
-                            isDesktop,
-                            subtasksByTask[t['id']] ?? [],
-                            listTitleMap,
-                            allTags,
-                          )),
-                      if (doneTasks.isNotEmpty) ...[
-                        Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          child: Text(
-                            '${tr('انجام‌شده‌ها', 'Completed')} (${toPersianDigits(doneTasks.length.toString())})',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: cs.onSurfaceVariant,
+                    ...lists.map((l) => Padding(
+                          padding: const EdgeInsets.only(left: 6),
+                          child: FilterChip(
+                            label: Text(l['title'] as String),
+                            selected: starredListFilterId == l['id'],
+                            onSelected: (_) => setState(() =>
+                                starredListFilterId = l['id'] as String),
+                          ),
+                        )),
+                  ],
+                ),
+              ),
+            // کادر افزودن سریع کار (هم در لیست‌ها و هم در صفحه اصلی «همه کارها»)
+            if (canAddHere)
+              Container(
+                margin: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: cs.surface,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: cs.outlineVariant),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.add, color: cs.primary),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: TextField(
+                            controller: quickAddCtrl,
+                            onSubmitted: (_) => _addTask(),
+                            decoration: InputDecoration(
+                              hintText: tr('افزودن کار جدید و فشردن Enter...',
+                                  'Add a task + Enter...'),
+                              border: InputBorder.none,
+                              isDense: true,
                             ),
                           ),
                         ),
-                        ...doneTasks.map((t) => _taskCard(
-                              t,
-                              isDesktop,
-                              subtasksByTask[t['id']] ?? [],
-                              listTitleMap,
-                              allTags,
-                            )),
+                        FilledButton(
+                          onPressed: _addTask,
+                          child: Text(tr('ثبت', 'Add')),
+                        ),
                       ],
+                    ),
+                    if (selectedListId == null) ...[
+                      const Divider(height: 8),
+                      Row(
+                        children: [
+                          Icon(Icons.list_alt_rounded,
+                              size: 16, color: cs.onSurfaceVariant),
+                          const SizedBox(width: 6),
+                          Text(
+                            tr('لیست مقصد:', 'List:'),
+                            style: TextStyle(
+                                fontSize: 12, color: cs.onSurfaceVariant),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String?>(
+                                isDense: true,
+                                isExpanded: true,
+                                value: editableLists.any(
+                                        (l) => l['id'] == quickAddTargetListId)
+                                    ? quickAddTargetListId
+                                    : null,
+                                items: [
+                                  DropdownMenuItem<String?>(
+                                    value: null,
+                                    child: Text(
+                                      tr('بدون لیست (همه کارها)',
+                                          'No list (All Tasks)'),
+                                      style: const TextStyle(fontSize: 12),
+                                    ),
+                                  ),
+                                  ...editableLists.map(
+                                    (l) => DropdownMenuItem<String?>(
+                                      value: l['id'] as String,
+                                      child: Text(
+                                        (l['title'] ?? '').toString(),
+                                        style: const TextStyle(fontSize: 12),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                                onChanged: (v) =>
+                                    setState(() => quickAddTargetListId = v),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ],
-                  ),
-          ),
-        ],
-      ),
+                  ],
+                ),
+              ),
+            Expanded(
+              child: filtered.isEmpty
+                  ? Center(
+                      child: Text(
+                        tr('هیچ کاری در این بخش وجود ندارد.', 'No tasks here.'),
+                        style: TextStyle(color: cs.onSurfaceVariant),
+                      ),
+                    )
+                  : ListView(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 84),
+                      children: [
+                        ReorderableListView.builder(
+                          shrinkWrap: true,
+                          physics: const NeverScrollableScrollPhysics(),
+                          buildDefaultDragHandles: false,
+                          itemCount: activeTasks.length,
+                          onReorder: (oldIndex, newIndex) async {
+                            if (newIndex > oldIndex) newIndex -= 1;
+                            final ids = activeTasks
+                                .map((t) => t['id'] as String)
+                                .toList();
+                            final moved = ids.removeAt(oldIndex);
+                            ids.insert(newIndex, moved);
+                            // حفظ ترتیب سایر کارها و اعمال ترتیب جدید
+                            final rest = _manualOrderIds
+                                .where((id) => !ids.contains(id))
+                                .toList();
+                            setState(() {
+                              _manualOrderIds = [...ids, ...rest];
+                            });
+                            await _saveManualOrder();
+                            if (sortBy != 'manual') {
+                              await appSettings.setSortBy('manual');
+                            }
+                          },
+                          itemBuilder: (context, index) {
+                            final t = activeTasks[index];
+                            return KeyedSubtree(
+                              key: ValueKey(t['id']),
+                              child: _taskCard(
+                                t,
+                                isDesktop,
+                                subtasksByTask[t['id']] ?? [],
+                                listTitleMap,
+                                allTags,
+                                reorderIndex: index,
+                              ),
+                            );
+                          },
+                        ),
+                        if (doneTasks.isNotEmpty) ...[
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            child: Text(
+                              '${tr('انجام‌شده‌ها', 'Completed')} (${toPersianDigits(doneTasks.length.toString())})',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: cs.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          ...doneTasks.map((t) => _taskCard(
+                                t,
+                                isDesktop,
+                                subtasksByTask[t['id']] ?? [],
+                                listTitleMap,
+                                allTags,
+                              )),
+                        ],
+                      ],
+                    ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1899,18 +2339,20 @@ void _onSettingsChanged() {
     bool isDesktop,
     List<JsonRow> subs,
     Map<String, String> listTitleMap,
-    List<String> allTags,
-  ) {
+    List<String> allTags, {
+    int? reorderIndex,
+  }) {
     final cs = Theme.of(context).colorScheme;
+    final taskId = task['id'] as String;
     final isDone = task['is_completed'] == true;
     final isStarred = task['is_starred'] == true;
-    final isSelected = isDesktop && selectedTaskId == task['id'];
+    final isMultiSelected = selectionMode && selectedTaskIds.contains(taskId);
+    final isSelected = isDesktop && !selectionMode && selectedTaskId == taskId;
     final canEdit = _canEditList(task['list_id'] as String?);
     final dueDate = formatAppDate(task['due_date'] as String?);
     final prio = (task['priority'] as String?) ?? 'normal';
     final tags = List<String>.from((task['tags'] as List?) ?? []);
 
-    // منطق نمایش مسئولین: اگر زیروظایف به چند نفر اساین شده باشند همه با ویرگول نمایش داده می‌شوند
     final assigneeNames = <String>{};
     for (final s in subs) {
       final uid = s['assigned_to'] as String?;
@@ -1927,7 +2369,6 @@ void _onSettingsChanged() {
     final assigneesLabel =
         assigneeNames.where((e) => e.isNotEmpty).join('، ');
 
-    // محاسبه درصد پیشرفت زیروظایف
     final doneSubs = subs.where((s) => s['is_completed'] == true).length;
     final progress = subs.isEmpty ? 0.0 : (doneSubs / subs.length);
     final listName = listTitleMap[task['list_id']] ?? '';
@@ -1936,77 +2377,102 @@ void _onSettingsChanged() {
     if (prio == 'urgent') prioColor = Colors.red;
     if (prio == 'medium') prioColor = Colors.orange;
 
-    return GestureDetector(
+    final cardWidget = GestureDetector(
       onSecondaryTapDown: (d) => _showTaskContextMenu(d.globalPosition, task),
       child: Card(
-        elevation: isSelected ? 3 : 0.8,
-        color: isSelected
-            ? cs.primaryContainer.withAlpha(130)
-            : (isDone ? cs.surface.withAlpha(170) : cs.surface),
+        elevation: (isSelected || isMultiSelected) ? 3 : 0.8,
+        color: isMultiSelected
+            ? cs.secondaryContainer
+            : (isSelected
+                ? cs.primaryContainer.withAlpha(130)
+                : (isDone ? cs.surface.withAlpha(170) : cs.surface)),
         margin: const EdgeInsets.only(bottom: 8),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(10),
-          side: isSelected
-              ? BorderSide(color: cs.primary, width: 1.5)
+          side: (isSelected || isMultiSelected)
+              ? BorderSide(color: cs.primary, width: 1.6)
               : (prioColor != Colors.transparent
                   ? BorderSide(color: prioColor.withAlpha(160), width: 1.2)
                   : BorderSide.none),
         ),
         child: ListTile(
-          leading: Checkbox(
-            value: isDone,
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-            onChanged: canEdit
-                ? (val) async {
-                    final checked = val ?? false;
-                    if (!checked) {
-                      final ok = await showDialog<bool>(
-                        context: context,
-                        builder: (ctx) => AlertDialog(
-                          title: Text(tr('بازگشایی کار', 'Reopen Task')),
-                          content: Text(
-                            tr(
-                              'موارد قبلی این کار قفل می‌مانند و فقط امکان ثبت به‌روزرسانی جدید وجود دارد. ادامه می‌دهید؟',
-                              'Previous items stay locked; only new updates allowed.',
-                            ),
-                          ),
-                          actions: [
-                            TextButton(
-                                onPressed: () => Navigator.pop(ctx, false),
-                                child: Text(tr('انصراف', 'Cancel'))),
-                            FilledButton(
-                                onPressed: () => Navigator.pop(ctx, true),
-                                child: Text(tr('بازگشایی', 'Reopen'))),
-                          ],
-                        ),
-                      );
-                      if (ok != true) return;
-                      await supabase.from('tasks').update({
-                        'is_completed': false,
-                        'reopened_at': DateTime.now().toUtc().toIso8601String(),
-                      }).eq('id', task['id']);
-                    } else {
-                      await playTickSound();
-                      await supabase.from('tasks').update({
-                        'is_completed': true,
-                        'completed_at':
-                            DateTime.now().toUtc().toIso8601String(),
-                        'completed_by': currentUserId,
-                        'completed_by_name': currentUserName,
-                      }).eq('id', task['id']);
-                      await supabase
-                          .from('subtasks')
-                          .update({'is_locked': true}).eq('task_id', task['id']);
-                      await supabase
-                          .from('comments')
-                          .update({'is_locked': true}).eq('task_id', task['id']);
-                      await supabase
-                          .from('note_history')
-                          .update({'is_locked': true}).eq('task_id', task['id']);
-                    }
-                  }
-                : null,
+          leading: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (reorderIndex != null && !selectionMode)
+                ReorderableDragStartListener(
+                  index: reorderIndex,
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 2, right: 2),
+                    child: Icon(Icons.drag_indicator_rounded,
+                        size: 20, color: cs.onSurfaceVariant.withAlpha(160)),
+                  ),
+                ),
+              if (selectionMode)
+                Checkbox(
+                  value: isMultiSelected,
+                  onChanged: (_) => _toggleTaskSelection(taskId),
+                )
+              else
+                Checkbox(
+                  value: isDone,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(4)),
+                  onChanged: canEdit
+                      ? (val) async {
+                          final checked = val ?? false;
+                          if (!checked) {
+                            final ok = await showDialog<bool>(
+                              context: context,
+                              builder: (ctx) => AlertDialog(
+                                title: Text(tr('بازگشایی کار', 'Reopen Task')),
+                                content: Text(
+                                  tr(
+                                    'موارد قبلی این کار قفل می‌مانند و فقط امکان ثبت به‌روزرسانی جدید وجود دارد. ادامه می‌دهید؟',
+                                    'Previous items stay locked; only new updates allowed.',
+                                  ),
+                                ),
+                                actions: [
+                                  TextButton(
+                                      onPressed: () =>
+                                          Navigator.pop(ctx, false),
+                                      child: Text(tr('انصراف', 'Cancel'))),
+                                  FilledButton(
+                                      onPressed: () => Navigator.pop(ctx, true),
+                                      child: Text(tr('بازگشایی', 'Reopen'))),
+                                ],
+                              ),
+                            );
+                            if (ok != true) return;
+                            await supabase.from('tasks').update({
+                              'is_completed': false,
+                              'reopened_at':
+                                  DateTime.now().toUtc().toIso8601String(),
+                            }).eq('id', taskId);
+                          } else {
+                            await playTickSound();
+                            await supabase.from('tasks').update({
+                              'is_completed': true,
+                              'completed_at':
+                                  DateTime.now().toUtc().toIso8601String(),
+                              'completed_by': currentUserId,
+                              'completed_by_name': currentUserName,
+                            }).eq('id', taskId);
+                            await supabase
+                                .from('subtasks')
+                                .update({'is_locked': true}).eq('task_id', taskId);
+                            await supabase
+                                .from('comments')
+                                .update({'is_locked': true}).eq('task_id', taskId);
+                            await supabase
+                                .from('note_history')
+                                .update({'is_locked': true}).eq('task_id', taskId);
+                          }
+                          await _refreshTasks();
+                        }
+                      : null,
+                ),
+            ],
           ),
           title: Row(
             children: [
@@ -2108,44 +2574,99 @@ void _onSettingsChanged() {
                 ),
             ],
           ),
-          trailing: IconButton(
-            icon: Icon(
-              isStarred ? Icons.star_rounded : Icons.star_border_rounded,
-              color: isStarred ? Colors.amber.shade700 : Colors.grey,
-            ),
-            onPressed: canEdit
-                ? () async {
-                    await supabase
-                        .from('tasks')
-                        .update({'is_starred': !isStarred}).eq('id', task['id']);
-                  }
-                : null,
-          ),
+          trailing: selectionMode
+              ? null
+              : IconButton(
+                  icon: Icon(
+                    isStarred ? Icons.star_rounded : Icons.star_border_rounded,
+                    color: isStarred ? Colors.amber.shade700 : Colors.grey,
+                  ),
+                  onPressed: canEdit
+                      ? () async {
+                          await supabase
+                              .from('tasks')
+                              .update({'is_starred': !isStarred})
+                              .eq('id', taskId);
+                          await _refreshTasks();
+                        }
+                      : null,
+                ),
+          onLongPress: () => _toggleTaskSelection(taskId),
           onTap: () {
+            if (selectionMode) {
+              _toggleTaskSelection(taskId);
+              return;
+            }
             if (isDesktop) {
-              setState(() => selectedTaskId = task['id'] as String);
+              setState(() => selectedTaskId = taskId);
             } else {
               Navigator.push(
                 context,
                 MaterialPageRoute(
                   builder: (_) => Scaffold(
-                    appBar: AppBar(title: Text(tr('جزئیات کار', 'Task Details'))),
+                    appBar:
+                        AppBar(title: Text(tr('جزئیات کار', 'Task Details'))),
                     body: TaskDetailPanel(
-                      taskId: task['id'] as String,
+                      taskId: taskId,
                       profilesMap: profilesMap,
                       existingTags: allTags,
                       canEdit: canEdit,
                       onStorageChanged: _refreshStorage,
-                      onDeleted: () => Navigator.pop(context),
+                      onDeleted: () {
+                        Navigator.pop(context);
+                        _refreshTasks();
+                      },
                     ),
                   ),
                 ),
-              );
+              ).then((_) => _refreshTasks());
             }
           },
         ),
       ),
     );
+
+    // روی دسکتاپ/وب می‌توان کارت را مستقیم روی لیست‌های منوی کناری درگ و رها کرد
+    if (isDesktop && !selectionMode && canEdit) {
+      return Draggable<JsonRow>(
+        data: task,
+        feedback: Material(
+          elevation: 6,
+          borderRadius: BorderRadius.circular(10),
+          child: Container(
+            width: 280,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: cs.primaryContainer,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: cs.primary),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.drive_file_move_outline,
+                    size: 18, color: cs.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    task['title'] as String,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: cs.onPrimaryContainer,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        childWhenDragging: Opacity(opacity: 0.35, child: cardWidget),
+        child: cardWidget,
+      );
+    }
+
+    return cardWidget;
   }
 
   @override
@@ -2153,181 +2674,226 @@ void _onSettingsChanged() {
     final isDesktop = MediaQuery.of(context).size.width >= 920;
     final cs = Theme.of(context).colorScheme;
 
-    return StreamBuilder<List<JsonRow>>(
-      stream: _tasksStream,
-      builder: (context, taskSnap) {
-        final allActiveTasks = (taskSnap.data ?? [])
-            .where((t) => t['deleted_at'] == null)
-            .toList();
-        final allTags = allActiveTasks
-            .expand((t) => List<String>.from((t['tags'] as List?) ?? []))
-            .toSet()
-            .toList();
+    final allActiveTasks =
+        _allTasks.where((t) => t['deleted_at'] == null).toList();
+    final allTags = allActiveTasks
+        .expand((t) => List<String>.from((t['tags'] as List?) ?? []))
+        .toSet()
+        .toList();
 
-        return StreamBuilder<List<JsonRow>>(
-          stream: _subtasksStream,
-          builder: (context, subSnap) {
-            final subtasksByTask = <String, List<JsonRow>>{};
-            for (final s in (subSnap.data ?? [])) {
-              final tid = s['task_id'] as String;
-              subtasksByTask.putIfAbsent(tid, () => []).add(s);
-            }
+    final subtasksByTask = <String, List<JsonRow>>{};
+    for (final s in _allSubtasks) {
+      final tid = s['task_id'] as String;
+      subtasksByTask.putIfAbsent(tid, () => []).add(s);
+    }
 
-            final selectedTaskListId = selectedTaskId != null
-                ? allActiveTasks
-                    .where((t) => t['id'] == selectedTaskId)
-                    .map((t) => t['list_id'] as String?)
-                    .firstOrNull
-                : null;
+    final filteredTasks = _getFilteredTasks(allActiveTasks, subtasksByTask);
 
-            return Scaffold(
-              appBar: AppBar(
-                title: showSearch
-                    ? TextField(
-                        controller: searchCtrl,
-                        autofocus: true,
-                        style: TextStyle(color: cs.onPrimary),
-                        decoration: InputDecoration(
-                          hintText: tr('جستجو در کارها، یادداشت‌ها و تگ‌ها...', 'Search...'),
-                          hintStyle:
-                              TextStyle(color: cs.onPrimary.withAlpha(180)),
-                          border: InputBorder.none,
-                        ),
-                        onChanged: (v) => setState(() => searchQuery = v),
-                      )
-                    : Text(_getHeaderTitle()),
-                actions: [
-                  IconButton(
-                    tooltip: tr('جستجو', 'Search'),
-                    icon: Icon(showSearch ? Icons.close : Icons.search_rounded),
-                    onPressed: () {
-                      setState(() {
-                        showSearch = !showSearch;
-                        if (!showSearch) {
-                          searchCtrl.clear();
-                          searchQuery = '';
-                        }
-                      });
-                    },
-                  ),
-                  PopupMenuButton<String>(
-                    tooltip: tr('مرتب‌سازی', 'Sort'),
-                    icon: const Icon(Icons.sort_rounded),
-                    onSelected: (v) => appSettings.setSortBy(v),
-                    itemBuilder: (_) => [
-                      CheckedPopupMenuItem(
-                        value: 'created',
-                        checked: sortBy == 'created',
-                        child: Text(tr('جدیدترین‌ها', 'Newest')),
-                      ),
-                      CheckedPopupMenuItem(
-                        value: 'due',
-                        checked: sortBy == 'due',
-                        child: Text(tr('تاریخ سررسید', 'Due Date')),
-                      ),
-                      CheckedPopupMenuItem(
-                        value: 'priority',
-                        checked: sortBy == 'priority',
-                        child: Text(tr('اولویت', 'Priority')),
-                      ),
-                      CheckedPopupMenuItem(
-                        value: 'starred',
-                        checked: sortBy == 'starred',
-                        child: Text(tr('ستاره‌دارها', 'Starred')),
-                      ),
-                    ],
-                  ),
-                  // زنگوله اعلان‌ها با شمارنده خوانده‌نشده
-                  StreamBuilder<List<JsonRow>>(
-                    stream: _notificationsStream,
-                    builder: (ctx, nSnap) {
-                      final unread = (nSnap.data ?? [])
-                          .where((n) => n['is_read'] != true)
-                          .length;
-                      return IconButton(
-                        tooltip: tr('اعلان‌ها', 'Notifications'),
-                        onPressed: _showNotificationsDialog,
-                        icon: Badge(
-                          isLabelVisible: unread > 0,
-                          label: Text(toPersianDigits(unread.toString())),
-                          child: const Icon(Icons.notifications_outlined),
-                        ),
-                      );
-                    },
-                  ),
-                  if (selectedListId != null)
-                    TextButton.icon(
-                      style:
-                          TextButton.styleFrom(foregroundColor: cs.onPrimary),
-                      onPressed: _showMembersDialog,
-                      icon: const Icon(Icons.group_add_outlined),
-                      label: Text(
-                        toPersianDigits(currentListMembers.length.toString()),
-                      ),
-                    ),
-                  const SizedBox(width: 6),
-                ],
+    final selectedTaskListId = selectedTaskId != null
+        ? allActiveTasks
+            .where((t) => t['id'] == selectedTaskId)
+            .map((t) => t['list_id'] as String?)
+            .firstOrNull
+        : null;
+
+    return Scaffold(
+      appBar: selectionMode
+          ? AppBar(
+              leading: IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: _exitSelectionMode,
               ),
-              drawer: isDesktop
-                  ? null
-                  : Drawer(
-                      child: _buildSidebar(
-                        allActiveTasks,
-                        subtasksByTask,
-                        closeDrawerOnTap: true,
+              title: Text(
+                '${toPersianDigits(selectedTaskIds.length.toString())} ${tr('انتخاب‌شده', 'selected')}',
+              ),
+              actions: [
+                IconButton(
+                  tooltip: tr('انتخاب همه', 'Select All'),
+                  icon: const Icon(Icons.select_all_rounded),
+                  onPressed: () {
+                    setState(() {
+                      if (selectedTaskIds.length == filteredTasks.length) {
+                        selectedTaskIds.clear();
+                        selectionMode = false;
+                      } else {
+                        selectedTaskIds
+                            .addAll(filteredTasks.map((t) => t['id'] as String));
+                      }
+                    });
+                  },
+                ),
+                IconButton(
+                  tooltip: tr('انتقال گروهی', 'Move Selected'),
+                  icon: const Icon(Icons.drive_file_move_outline),
+                  onPressed: _bulkMoveTasks,
+                ),
+                IconButton(
+                  tooltip: tr('حذف گروهی', 'Delete Selected'),
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: _bulkDeleteTasks,
+                ),
+              ],
+            )
+          : AppBar(
+              title: showSearch
+                  ? TextField(
+                      controller: searchCtrl,
+                      autofocus: true,
+                      style: TextStyle(color: cs.onPrimary),
+                      decoration: InputDecoration(
+                        hintText: tr(
+                            'جستجو در کارها، یادداشت‌ها و تگ‌ها...', 'Search...'),
+                        hintStyle: TextStyle(color: cs.onPrimary.withAlpha(180)),
+                        border: InputBorder.none,
+                      ),
+                      onChanged: (v) => setState(() => searchQuery = v),
+                    )
+                  : Text(_getHeaderTitle()),
+              actions: [
+                IconButton(
+                  tooltip: tr('انتخاب چندتایی', 'Multi-select'),
+                  icon: const Icon(Icons.checklist_rtl_rounded),
+                  onPressed: () => setState(() => selectionMode = true),
+                ),
+                IconButton(
+                  tooltip: tr('جستجو', 'Search'),
+                  icon: Icon(showSearch ? Icons.close : Icons.search_rounded),
+                  onPressed: () {
+                    setState(() {
+                      showSearch = !showSearch;
+                      if (!showSearch) {
+                        searchCtrl.clear();
+                        searchQuery = '';
+                      }
+                    });
+                  },
+                ),
+                PopupMenuButton<String>(
+                  tooltip: tr('مرتب‌سازی', 'Sort'),
+                  icon: const Icon(Icons.sort_rounded),
+                  onSelected: (v) => appSettings.setSortBy(v),
+                  itemBuilder: (_) => [
+                    CheckedPopupMenuItem(
+                      value: 'manual',
+                      checked: sortBy == 'manual',
+                      child: Text(tr('ترتیب دستی (درگ)', 'Manual Order')),
+                    ),
+                    CheckedPopupMenuItem(
+                      value: 'created',
+                      checked: sortBy == 'created',
+                      child: Text(tr('جدیدترین‌ها', 'Newest')),
+                    ),
+                    CheckedPopupMenuItem(
+                      value: 'due',
+                      checked: sortBy == 'due',
+                      child: Text(tr('تاریخ سررسید', 'Due Date')),
+                    ),
+                    CheckedPopupMenuItem(
+                      value: 'priority',
+                      checked: sortBy == 'priority',
+                      child: Text(tr('اولویت', 'Priority')),
+                    ),
+                    CheckedPopupMenuItem(
+                      value: 'starred',
+                      checked: sortBy == 'starred',
+                      child: Text(tr('ستاره‌دارها', 'Starred')),
+                    ),
+                  ],
+                ),
+                StreamBuilder<List<JsonRow>>(
+                  stream: _notificationsStream,
+                  builder: (ctx, nSnap) {
+                    final unread = (nSnap.data ?? [])
+                        .where((n) => n['is_read'] != true)
+                        .length;
+                    return IconButton(
+                      tooltip: tr('اعلان‌ها', 'Notifications'),
+                      onPressed: _showNotificationsDialog,
+                      icon: Badge(
+                        isLabelVisible: unread > 0,
+                        label: Text(toPersianDigits(unread.toString())),
+                        child: const Icon(Icons.notifications_outlined),
+                      ),
+                    );
+                  },
+                ),
+                if (selectedListId != null)
+                  TextButton.icon(
+                    style:
+                        TextButton.styleFrom(foregroundColor: cs.onPrimary),
+                    onPressed: _showMembersDialog,
+                    icon: const Icon(Icons.group_add_outlined),
+                    label: Text(
+                      toPersianDigits(currentListMembers.length.toString()),
+                    ),
+                  ),
+                const SizedBox(width: 6),
+              ],
+            ),
+      drawer: isDesktop
+          ? null
+          : Drawer(
+              child: _buildSidebar(
+                allActiveTasks,
+                subtasksByTask,
+                closeDrawerOnTap: true,
+              ),
+            ),
+      floatingActionButton: selectionMode
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: _showQuickAddTaskDialog,
+              icon: const Icon(Icons.add_task_rounded),
+              label: Text(tr('کار جدید', 'New Task')),
+            ),
+      body: isDesktop
+          ? Row(
+              children: [
+                SizedBox(
+                  width: 280,
+                  child: _buildSidebar(allActiveTasks, subtasksByTask),
+                ),
+                VerticalDivider(width: 1, color: cs.outlineVariant),
+                Expanded(
+                  flex: 3,
+                  child: _buildTasksPane(
+                    true,
+                    filteredTasks,
+                    subtasksByTask,
+                    allTags,
+                  ),
+                ),
+                if (selectedTaskId != null)
+                  Container(
+                    width: 420,
+                    decoration: BoxDecoration(
+                      color: cs.surface,
+                      border: Border(
+                        right: BorderSide(color: cs.outlineVariant),
                       ),
                     ),
-              body: isDesktop
-                  ? Row(
-                      children: [
-                        SizedBox(
-                          width: 280,
-                          child: _buildSidebar(allActiveTasks, subtasksByTask),
-                        ),
-                        VerticalDivider(width: 1, color: cs.outlineVariant),
-                        Expanded(
-                          flex: 3,
-                          child: _buildTasksPane(
-                            true,
-                            allActiveTasks,
-                            subtasksByTask,
-                            allTags,
-                          ),
-                        ),
-                        if (selectedTaskId != null)
-                          Container(
-                            width: 420,
-                            decoration: BoxDecoration(
-                              color: cs.surface,
-                              border: Border(
-                                right: BorderSide(color: cs.outlineVariant),
-                              ),
-                            ),
-                            child: TaskDetailPanel(
-                              key: ValueKey(selectedTaskId),
-                              taskId: selectedTaskId!,
-                              profilesMap: profilesMap,
-                              existingTags: allTags,
-                              canEdit: _canEditList(selectedTaskListId),
-                              onStorageChanged: _refreshStorage,
-                              onClose: () =>
-                                  setState(() => selectedTaskId = null),
-                              onDeleted: () =>
-                                  setState(() => selectedTaskId = null),
-                            ),
-                          ),
-                      ],
-                    )
-                  : _buildTasksPane(
-                      false,
-                      allActiveTasks,
-                      subtasksByTask,
-                      allTags,
+                    child: TaskDetailPanel(
+                      key: ValueKey(selectedTaskId),
+                      taskId: selectedTaskId!,
+                      profilesMap: profilesMap,
+                      existingTags: allTags,
+                      canEdit: _canEditList(selectedTaskListId),
+                      onStorageChanged: _refreshStorage,
+                      onClose: () => setState(() => selectedTaskId = null),
+                      onDeleted: () {
+                        setState(() => selectedTaskId = null);
+                        _refreshTasks();
+                      },
                     ),
-            );
-          },
-        );
-      },
+                  ),
+              ],
+            )
+          : _buildTasksPane(
+              false,
+              filteredTasks,
+              subtasksByTask,
+              allTags,
+            ),
     );
   }
 }
