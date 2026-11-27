@@ -148,7 +148,12 @@ class _UserSettingsDialogState extends State<UserSettingsDialog> {
             children: [
               Icon(Icons.settings_rounded, color: cs.primary),
               const SizedBox(width: 8),
-              Text(tr('تنظیمات حساب و برنامه', 'Account & App Settings')),
+              Expanded(
+                child: Text(
+                  tr('تنظیمات حساب و برنامه', 'Account & App Settings'),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
             ],
           ),
           content: SizedBox(
@@ -244,24 +249,46 @@ class _UserSettingsDialogState extends State<UserSettingsDialog> {
                     value: appSettings.soundEnabled,
                     onChanged: (v) => appSettings.setSound(v),
                   ),
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.language_rounded),
-                    title: Text(tr('زبان برنامه', 'Language')),
-                    trailing: SegmentedButton<String>(
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      const Icon(Icons.language_rounded, size: 22),
+                      const SizedBox(width: 10),
+                      Text(
+                        tr('زبان برنامه', 'Language'),
+                        style: const TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w500),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: SegmentedButton<String>(
                       segments: const [
                         ButtonSegment(value: 'fa', label: Text('فارسی')),
-                        ButtonSegment(value: 'en', label: Text('EN')),
+                        ButtonSegment(value: 'en', label: Text('English')),
                       ],
                       selected: {appSettings.lang},
                       onSelectionChanged: (s) => appSettings.setLang(s.first),
                     ),
                   ),
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.format_textdirection_r_to_l),
-                    title: Text(tr('جهت چیدمان صفحه', 'Page Direction')),
-                    trailing: SegmentedButton<bool>(
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      const Icon(Icons.format_textdirection_r_to_l, size: 22),
+                      const SizedBox(width: 10),
+                      Text(
+                        tr('جهت چیدمان صفحه', 'Page Direction'),
+                        style: const TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w500),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: SegmentedButton<bool>(
                       segments: [
                         ButtonSegment(
                             value: true, label: Text(tr('راست‌چین', 'RTL'))),
@@ -1000,6 +1027,7 @@ class _TodoImportDialogState extends State<TodoImportDialog> {
     );
   }
 }
+
 // ابزار بازیابی از فایل بکاپ ماهانه
 Future<void> showBackupRestoreDialog(
   BuildContext context,
